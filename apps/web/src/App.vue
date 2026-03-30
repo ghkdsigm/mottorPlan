@@ -1,11 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { ComponentPublicInstance } from "vue";
 import { toPng } from "html-to-image";
 import jsPDF from "jspdf";
-import type { ArtifactDocument, GenerationResponse, HistoryItem, WorkspaceArtifactSet } from "@mottor-plan/shared";
+import type {
+  ArtifactDocument,
+  FeatureFlowVisualization,
+  GenerationResponse,
+  HistoryItem,
+  TreeMapNode,
+  TreeMapVisualization,
+  WorkspaceArtifactSet
+} from "@mottor-plan/shared";
 import { api } from "./services/api";
+import TreeMap from "./components/TreeMap.vue";
 
 type TabKey = "prd" | "featureSpec" | "userFlow";
+type FeatureEdgePath = {
+  id: string;
+  d: string;
+  label?: string;
+  midX: number;
+  midY: number;
+};
 
 const workspaceName = ref("홈페이지 리뉴얼 예약 보드");
 const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 유저 플로우를 생성해줘");
@@ -14,7 +31,10 @@ const isGenerating = ref(false);
 const isHistoryOpen = ref(false);
 const history = ref<HistoryItem[]>([]);
 const boardRef = ref<HTMLElement | null>(null);
+const featureFlowHostRef = ref<HTMLElement | null>(null);
 const errorMessage = ref("");
+const featureEdgePaths = ref<FeatureEdgePath[]>([]);
+const featureNodeElements = new Map<string, HTMLElement>();
 
 const fallbackArtifacts: WorkspaceArtifactSet = {
   prd: {
@@ -67,7 +87,80 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
           "문서 다운로드 이력을 추적할 수 있도록 이벤트를 기록합니다."
         ]
       }
-    ]
+    ],
+    visualization: {
+      type: "feature-flow",
+      rootNodeId: "root",
+      nodes: [
+        {
+          id: "root",
+          label: "회의실 예약 아이디어 입력",
+          description: "기획 대상 서비스와 핵심 문제를 한 줄로 정의합니다.",
+          column: 0,
+          accent: "primary"
+        },
+        {
+          id: "policy",
+          label: "예약 정책 분석",
+          description: "운영시간, 권한, 예외정책을 정리합니다.",
+          column: 1,
+          accent: "secondary"
+        },
+        {
+          id: "calendar",
+          label: "캘린더 연동 정의",
+          description: "Google, Outlook 연동 범위를 확정합니다.",
+          column: 1,
+          accent: "neutral"
+        },
+        {
+          id: "booking",
+          label: "실시간 예약 엔진 설계",
+          description: "중복 방지와 상태 반영 로직을 구조화합니다.",
+          column: 2,
+          accent: "primary"
+        },
+        {
+          id: "alarm",
+          label: "알림 기능 설계",
+          description: "예약 생성, 변경, 취소 알림 정책을 정의합니다.",
+          column: 2,
+          accent: "secondary"
+        },
+        {
+          id: "history",
+          label: "이력 저장",
+          description: "생성 결과와 다운로드 이력을 저장합니다.",
+          column: 3,
+          accent: "neutral"
+        },
+        {
+          id: "export",
+          label: "문서 다운로드",
+          description: "PRD, PDF, PNG를 내보냅니다.",
+          column: 3,
+          accent: "primary"
+        },
+        {
+          id: "reuse",
+          label: "후속 요청 재생성",
+          description: "히스토리 기반으로 다음 버전 기획을 생성합니다.",
+          column: 4,
+          accent: "secondary"
+        }
+      ],
+      edges: [
+        { from: "root", to: "policy", label: "분석" },
+        { from: "root", to: "calendar", label: "구조화" },
+        { from: "policy", to: "booking", label: "실행" },
+        { from: "calendar", to: "booking", label: "연동" },
+        { from: "policy", to: "alarm", label: "정책" },
+        { from: "booking", to: "history", label: "저장" },
+        { from: "alarm", to: "export", label: "출력" },
+        { from: "history", to: "reuse", label: "재활용" },
+        { from: "export", to: "reuse", label: "후속 작업" }
+      ]
+    }
   },
   userFlow: {
     kind: "user-flow",
@@ -93,7 +186,66 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
           "다운로드 실패 시 형식을 변경해 재시도할 수 있게 합니다."
         ]
       }
-    ]
+    ],
+    visualization: {
+      type: "tree-map",
+      title: "IA 기반 유저 플로우 구조",
+      root: {
+        id: "root",
+        label: "서비스 시작",
+        description: "사용자가 서비스에 진입해 주요 메뉴를 탐색합니다.",
+        accent: "neutral",
+        children: [
+          {
+            id: "auth",
+            label: "인증",
+            accent: "primary",
+            children: [
+              { id: "auth-login", label: "로그인", accent: "primary" },
+              { id: "auth-register", label: "회원가입" },
+              { id: "auth-reset", label: "비밀번호 찾기" }
+            ]
+          },
+          {
+            id: "dashboard",
+            label: "대시보드",
+            accent: "primary",
+            children: [
+              {
+                id: "meeting",
+                label: "회의실 조회",
+                children: [
+                  { id: "meeting-search", label: "회의실 검색" },
+                  { id: "meeting-detail", label: "회의실 상세" },
+                  { id: "meeting-book", label: "예약하기", accent: "secondary" }
+                ]
+              },
+              {
+                id: "reservation",
+                label: "예약 관리",
+                children: [
+                  { id: "reservation-list", label: "내 예약 목록" },
+                  { id: "reservation-detail", label: "예약 상세 보기" },
+                  { id: "reservation-update", label: "예약 변경" },
+                  { id: "reservation-cancel", label: "예약 취소" }
+                ]
+              },
+              {
+                id: "setting",
+                label: "설정",
+                accent: "secondary",
+                children: [
+                  { id: "setting-alert", label: "알림 설정" },
+                  { id: "setting-profile", label: "계정 설정" },
+                  { id: "setting-provider", label: "연동 관리" },
+                  { id: "setting-logout", label: "로그아웃" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
   }
 };
 
@@ -110,9 +262,94 @@ const tabItems: Array<{ key: TabKey; label: string }> = [
   { key: "userFlow", label: "유저플로우" }
 ];
 
-const currentDocument = computed<ArtifactDocument>(() => {
-  return artifacts.value[activeTab.value];
+const currentDocument = computed<ArtifactDocument>(() => artifacts.value[activeTab.value]);
+
+const featureFlowVisualization = computed<FeatureFlowVisualization | null>(() => {
+  const visualization = currentDocument.value.visualization;
+  return visualization?.type === "feature-flow" ? visualization : null;
 });
+
+const userFlowVisualization = computed<TreeMapVisualization | null>(() => {
+  const visualization = currentDocument.value.visualization;
+  return visualization?.type === "tree-map" ? visualization : null;
+});
+
+const featureFlowColumns = computed(() => {
+  if (!featureFlowVisualization.value) {
+    return [];
+  }
+
+  const grouped = new Map<number, FeatureFlowVisualization["nodes"]>();
+  for (const node of featureFlowVisualization.value.nodes) {
+    const nodes = grouped.get(node.column) ?? [];
+    nodes.push(node);
+    grouped.set(node.column, nodes);
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([column, nodes]) => ({
+      column,
+      nodes
+    }));
+});
+
+function setFeatureNodeRef(nodeId: string) {
+  return (element: Element | ComponentPublicInstance | null) => {
+    if (element instanceof HTMLElement) {
+      featureNodeElements.set(nodeId, element);
+      return;
+    }
+    featureNodeElements.delete(nodeId);
+  };
+}
+
+function updateFeatureEdgePaths() {
+  const visualization = featureFlowVisualization.value;
+  const host = featureFlowHostRef.value;
+
+  if (!visualization || !host) {
+    featureEdgePaths.value = [];
+    return;
+  }
+
+  const hostRect = host.getBoundingClientRect();
+
+  featureEdgePaths.value = visualization.edges.flatMap((edge) => {
+    const fromElement = featureNodeElements.get(edge.from);
+    const toElement = featureNodeElements.get(edge.to);
+
+    if (!fromElement || !toElement) {
+      return [];
+    }
+
+    const fromRect = fromElement.getBoundingClientRect();
+    const toRect = toElement.getBoundingClientRect();
+    const startX = fromRect.right - hostRect.left;
+    const startY = fromRect.top - hostRect.top + fromRect.height / 2;
+    const endX = toRect.left - hostRect.left;
+    const endY = toRect.top - hostRect.top + toRect.height / 2;
+    const curveOffset = Math.max((endX - startX) * 0.45, 36);
+    const midX = startX + (endX - startX) / 2;
+    const midY = startY + (endY - startY) / 2;
+
+    return [
+      {
+        id: `${edge.from}-${edge.to}`,
+        d: `M ${startX} ${startY} C ${startX + curveOffset} ${startY}, ${endX - curveOffset} ${endY}, ${endX} ${endY}`,
+        label: edge.label,
+        midX,
+        midY
+      }
+    ];
+  });
+}
+
+function scheduleFeatureFlowUpdate() {
+  void nextTick().then(() => {
+    updateFeatureEdgePaths();
+  });
+}
 
 function buildFallbackResponse(): GenerationResponse {
   const normalized = prompt.value.trim();
@@ -179,6 +416,7 @@ async function generateArtifacts() {
     suggestedActions.value = fallback.suggestedActions;
   } finally {
     isGenerating.value = false;
+    scheduleFeatureFlowUpdate();
   }
 }
 
@@ -190,6 +428,40 @@ function downloadText(filename: string, content: string, mimeType: string) {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function formatVisualization(document: ArtifactDocument) {
+  const visualization = document.visualization;
+  if (!visualization) {
+    return [];
+  }
+
+  if (visualization.type === "feature-flow") {
+    return [
+      "## 기능 플로우 그래프",
+      "",
+      ...visualization.nodes.map((node) => `- [${node.column}] ${node.label}: ${node.description ?? ""}`),
+      "",
+      "### 연결 관계",
+      "",
+      ...visualization.edges.map((edge) => `- ${edge.from} -> ${edge.to}${edge.label ? ` (${edge.label})` : ""}`),
+      ""
+    ];
+  }
+
+  function walkTree(node: TreeMapNode, depth = 0): string[] {
+    return [
+      `${"  ".repeat(depth)}- ${node.label}${node.description ? `: ${node.description}` : ""}`,
+      ...(node.children?.flatMap((child) => walkTree(child, depth + 1)) ?? [])
+    ];
+  }
+
+  return [
+    `## ${visualization.title}`,
+    "",
+    ...walkTree(visualization.root),
+    ""
+  ];
 }
 
 function formatDocument(document: ArtifactDocument) {
@@ -206,7 +478,8 @@ function formatDocument(document: ArtifactDocument) {
       "",
       ...section.bullets.map((bullet) => `- ${bullet}`),
       ""
-    ])
+    ]),
+    ...formatVisualization(document)
   ].join("\n");
 }
 
@@ -244,8 +517,21 @@ function downloadPdf() {
   pdf.save(`${currentDocument.value.title}.pdf`);
 }
 
+function handleResize() {
+  updateFeatureEdgePaths();
+}
+
+watch(featureFlowVisualization, scheduleFeatureFlowUpdate, { deep: true });
+watch(activeTab, scheduleFeatureFlowUpdate);
+
 onMounted(() => {
   loadHistory();
+  window.addEventListener("resize", handleResize);
+  scheduleFeatureFlowUpdate();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", handleResize);
 });
 </script>
 
@@ -343,6 +629,63 @@ onMounted(() => {
               </ul>
             </div>
           </div>
+
+          <section v-if="featureFlowVisualization" class="visual-section">
+            <div class="visual-section__header">
+              <div>
+                <span class="label">추가 시각화</span>
+                <h2>기능 플로우 그래프</h2>
+              </div>
+              <p>기능명세서 하단에 좌측에서 우측으로 확장되는 구조형 그래프를 함께 제공합니다.</p>
+            </div>
+
+            <div ref="featureFlowHostRef" class="feature-flow">
+              <svg class="feature-flow__svg" aria-hidden="true">
+                <g v-for="edge in featureEdgePaths" :key="edge.id">
+                  <path :d="edge.d" class="feature-flow__path" />
+                  <text
+                    v-if="edge.label"
+                    :x="edge.midX"
+                    :y="edge.midY - 6"
+                    class="feature-flow__label"
+                  >
+                    {{ edge.label }}
+                  </text>
+                </g>
+              </svg>
+
+              <div class="feature-flow__columns">
+                <div
+                  v-for="column in featureFlowColumns"
+                  :key="column.column"
+                  class="feature-flow__column"
+                >
+                  <span class="feature-flow__column-title">STEP {{ column.column + 1 }}</span>
+                  <div
+                    v-for="node in column.nodes"
+                    :key="node.id"
+                    :ref="setFeatureNodeRef(node.id)"
+                    :class="['flow-node', `flow-node--${node.accent ?? 'neutral'}`]"
+                  >
+                    <strong>{{ node.label }}</strong>
+                    <p>{{ node.description }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="userFlowVisualization" class="visual-section">
+            <div class="visual-section__header">
+              <div>
+                <span class="label">추가 시각화</span>
+                <h2>{{ userFlowVisualization.title }}</h2>
+              </div>
+              <p>유저플로우 하단에 IA 스타일의 메뉴 구조 보드를 함께 생성합니다.</p>
+            </div>
+
+            <TreeMap :visualization="userFlowVisualization" />
+          </section>
         </div>
       </section>
 
@@ -473,12 +816,14 @@ onMounted(() => {
 }
 
 .chat-panel__card h2,
-.chat-panel__card h3 {
+.chat-panel__card h3,
+.visual-section__header h2 {
   margin: 0 0 8px;
   font-size: 18px;
 }
 
-.chat-panel__card p {
+.chat-panel__card p,
+.visual-section__header p {
   margin: 0 0 14px;
   color: #777777;
   font-size: 14px;
@@ -671,6 +1016,124 @@ onMounted(() => {
   font-size: 14px;
 }
 
+.visual-section {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(12, 58, 39, 0.1);
+}
+
+.visual-section__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.visual-section__header p {
+  max-width: 420px;
+  margin: 24px 0 0;
+}
+
+.feature-flow {
+  position: relative;
+  overflow-x: auto;
+  padding: 12px 0 8px;
+}
+
+.feature-flow__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.feature-flow__path {
+  fill: none;
+  stroke: rgba(0, 105, 77, 0.28);
+  stroke-width: 2;
+}
+
+.feature-flow__label {
+  font-size: 11px;
+  fill: #5f6d64;
+  text-anchor: middle;
+}
+
+.feature-flow__columns {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: 48px;
+  min-width: max-content;
+  padding: 10px 12px 24px;
+}
+
+.feature-flow__column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.feature-flow__column::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: 8px;
+  left: 14px;
+  border-left: 1px dashed rgba(0, 105, 77, 0.18);
+}
+
+.feature-flow__column-title {
+  position: relative;
+  z-index: 1;
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #5c665f;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.flow-node {
+  position: relative;
+  z-index: 1;
+  margin-left: 18px;
+  min-height: 72px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 20px rgba(12, 58, 39, 0.05);
+}
+
+.flow-node strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 15px;
+}
+
+.flow-node p {
+  margin: 0;
+  color: #66756b;
+  font-size: 13px;
+}
+
+.flow-node--primary {
+  border: 1px solid rgba(0, 105, 77, 0.35);
+}
+
+.flow-node--secondary {
+  border: 1px solid rgba(120, 192, 70, 0.5);
+}
+
+.flow-node--neutral {
+  border: 1px solid rgba(194, 214, 190, 0.95);
+}
+
 .history-panel {
   width: 0;
   overflow: hidden;
@@ -732,6 +1195,11 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .feature-flow__column::before {
+    display: none;
+  }
+
+  .visual-section__header,
   .topbar {
     grid-template-columns: 1fr;
     height: auto;

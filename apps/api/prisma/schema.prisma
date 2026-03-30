@@ -26,6 +26,7 @@ model GeneratedDocument {
   version     String
   generatedAt DateTime           @default(now())
   sections    Json
+  visualization Json?
   createdAt   DateTime           @default(now())
   session     GenerationSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 

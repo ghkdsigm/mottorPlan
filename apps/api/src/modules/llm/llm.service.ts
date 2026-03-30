@@ -1,6 +1,12 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import type { ArtifactDocument, ArtifactSection, WorkspaceArtifactSet } from "@mottor-plan/shared";
+import type {
+  ArtifactDocument,
+  ArtifactSection,
+  FeatureFlowVisualization,
+  TreeMapVisualization,
+  WorkspaceArtifactSet
+} from "@mottor-plan/shared";
 
 interface LlmOutput {
   artifacts: WorkspaceArtifactSet;
@@ -32,14 +38,20 @@ export class LlmService {
               {
                 role: "system",
                 content:
-                  "너는 B2B SaaS 제품기획 전문가다. 입력 아이디어를 바탕으로 PRD, 기능명세서, 유저플로우를 한국어 JSON으로 생성한다."
+                  "너는 B2B SaaS 제품기획 전문가다. 입력 아이디어를 바탕으로 PRD, 기능명세서, 유저플로우를 한국어 JSON으로 생성한다. 기능명세서에는 좌측에서 우측으로 확장되는 기능 플로우 그래프를, 유저플로우에는 left-to-right tree 기반 메뉴 구조도를 반드시 포함한다."
               },
               {
                 role: "user",
                 content: [
                   "다음 형식으로만 응답해.",
                   '{ "artifacts": { "prd": {...}, "featureSpec": {...}, "userFlow": {...} }, "suggestedActions": ["", "", ""] }',
-                  '각 문서는 title, version, generatedAt, sections를 포함하고, sections는 [{ "title": "", "summary": "", "bullets": ["", ""] }] 구조다.',
+                  '각 문서는 title, version, generatedAt, sections, visualization을 포함한다.',
+                  'sections는 [{ "title": "", "summary": "", "bullets": ["", ""] }] 구조다.',
+                  'featureSpec.visualization은 반드시 { "type": "feature-flow", "rootNodeId": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
+                  'userFlow.visualization은 반드시 { "type": "tree-map", "title": "", "root": { "id": "", "label": "", "description": "", "accent": "primary|secondary|neutral", "children": [] } } 구조를 따른다.',
+                  "featureSpec 그래프는 필요한 만큼 column과 node를 사용해 좌->우 흐름이 보이도록 만든다.",
+                  "userFlow tree는 depth 제한 없이 children을 중첩할 수 있어야 하며, 같은 depth에 여러 형제 노드가 있을 수 있다.",
+                  "메뉴 구조도는 root에서 시작해 좌우로 뻗고, 동일 레벨 항목은 아래로 쌓이는 형태로 설계한다.",
                   `워크스페이스명: ${workspaceName}`,
                   `사용자 요청: ${prompt}`
                 ].join("\n")
@@ -77,13 +89,15 @@ export class LlmService {
           "feature-spec",
           `${workspaceName} 기능명세서`,
           generatedAt,
-          baseSections.featureSpec
+          baseSections.featureSpec,
+          this.buildFeatureFlowVisualization(workspaceName)
         ),
         userFlow: this.createDocument(
           "user-flow",
           `${workspaceName} 유저플로우`,
           generatedAt,
-          baseSections.userFlow
+          baseSections.userFlow,
+          this.buildUserFlowVisualization()
         )
       },
       suggestedActions: [
@@ -98,14 +112,161 @@ export class LlmService {
     kind: ArtifactDocument["kind"],
     title: string,
     generatedAt: string,
-    sections: ArtifactSection[]
+    sections: ArtifactSection[],
+    visualization?: ArtifactDocument["visualization"]
   ): ArtifactDocument {
     return {
       kind,
       title,
       version: "v1.0",
       generatedAt,
-      sections
+      sections,
+      visualization
+    };
+  }
+
+  private buildFeatureFlowVisualization(workspaceName: string): FeatureFlowVisualization {
+    return {
+      type: "feature-flow",
+      rootNodeId: "root",
+      nodes: [
+        {
+          id: "root",
+          label: `${workspaceName} 기획 생성`,
+          description: "한 줄 아이디어를 입력하고 산출물 생성 세션을 시작합니다.",
+          column: 0,
+          accent: "primary"
+        },
+        {
+          id: "analyze",
+          label: "요청 분석",
+          description: "핵심 목적, 대상 사용자, 제약조건을 분해합니다.",
+          column: 1,
+          accent: "secondary"
+        },
+        {
+          id: "standardize",
+          label: "문서 구조 표준화",
+          description: "PRD, 기능명세서, 유저플로우 공통 용어와 필드를 정렬합니다.",
+          column: 1,
+          accent: "secondary"
+        },
+        {
+          id: "prd",
+          label: "PRD 초안 생성",
+          description: "제품 목표, 범위, KPI를 산출합니다.",
+          column: 2,
+          accent: "neutral"
+        },
+        {
+          id: "feature",
+          label: "기능명세 생성",
+          description: "핵심 기능과 예외 정책을 구체화합니다.",
+          column: 2,
+          accent: "primary"
+        },
+        {
+          id: "user-flow",
+          label: "유저플로우 생성",
+          description: "IA 및 주요 사용자 여정을 구조화합니다.",
+          column: 2,
+          accent: "secondary"
+        },
+        {
+          id: "history",
+          label: "히스토리 저장",
+          description: "생성 세션과 결과물을 Supabase에 저장합니다.",
+          column: 3,
+          accent: "neutral"
+        },
+        {
+          id: "export",
+          label: "다운로드 제공",
+          description: "PNG, PDF, Markdown 형식으로 내보냅니다.",
+          column: 3,
+          accent: "primary"
+        },
+        {
+          id: "reuse",
+          label: "재생성 및 재사용",
+          description: "이전 히스토리를 기반으로 후속 기획을 이어갑니다.",
+          column: 4,
+          accent: "secondary"
+        }
+      ],
+      edges: [
+        { from: "root", to: "analyze", label: "입력" },
+        { from: "root", to: "standardize", label: "정규화" },
+        { from: "analyze", to: "prd", label: "산출" },
+        { from: "standardize", to: "feature", label: "정의" },
+        { from: "standardize", to: "user-flow", label: "구조화" },
+        { from: "prd", to: "history", label: "저장" },
+        { from: "feature", to: "export", label: "내보내기" },
+        { from: "user-flow", to: "export", label: "시각화" },
+        { from: "history", to: "reuse", label: "재사용" },
+        { from: "export", to: "reuse", label: "공유" }
+      ]
+    };
+  }
+
+  private buildUserFlowVisualization(): TreeMapVisualization {
+    return {
+      type: "tree-map",
+      title: "사용자 여정 및 IA 구조",
+      root: {
+        id: "root",
+        label: "서비스 시작",
+        description: "사용자가 서비스에 진입한 뒤 목적에 따라 메뉴를 확장합니다.",
+        accent: "neutral",
+        children: [
+          {
+            id: "auth",
+            label: "인증",
+            accent: "primary",
+            children: [
+              { id: "auth-login", label: "로그인", accent: "primary" },
+              { id: "auth-signup", label: "회원가입" },
+              { id: "auth-password", label: "비밀번호 찾기" }
+            ]
+          },
+          {
+            id: "workspace",
+            label: "대시보드",
+            accent: "primary",
+            children: [
+              {
+                id: "generate",
+                label: "문서 생성",
+                children: [
+                  { id: "generate-request", label: "요청 입력" },
+                  { id: "generate-preview", label: "산출물 미리보기" },
+                  { id: "generate-run", label: "문서 생성 실행", accent: "secondary" }
+                ]
+              },
+              {
+                id: "history",
+                label: "히스토리",
+                children: [
+                  { id: "history-list", label: "생성 히스토리 조회" },
+                  { id: "history-detail", label: "문서 상세 보기" },
+                  { id: "history-download", label: "다운로드" }
+                ]
+              },
+              {
+                id: "setting",
+                label: "설정",
+                accent: "secondary",
+                children: [
+                  { id: "setting-template", label: "출력 템플릿 설정" },
+                  { id: "setting-provider", label: "LLM Provider 설정" },
+                  { id: "setting-profile", label: "프로필 수정" },
+                  { id: "setting-logout", label: "로그아웃" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     };
   }
 

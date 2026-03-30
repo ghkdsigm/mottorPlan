@@ -12,6 +12,7 @@ type DocumentRecordInput = {
   version: string;
   generatedAt: Date;
   sections: Prisma.InputJsonValue;
+  visualization?: Prisma.InputJsonValue;
 };
 
 @Injectable()
@@ -61,21 +62,30 @@ export class GenerationService {
         title: artifacts.prd.title,
         version: artifacts.prd.version,
         generatedAt: new Date(artifacts.prd.generatedAt),
-        sections: artifacts.prd.sections as unknown as Prisma.InputJsonValue
+        sections: artifacts.prd.sections as unknown as Prisma.InputJsonValue,
+        visualization: artifacts.prd.visualization
+          ? (artifacts.prd.visualization as unknown as Prisma.InputJsonValue)
+          : undefined
       },
       {
         kind: "FEATURE_SPEC",
         title: artifacts.featureSpec.title,
         version: artifacts.featureSpec.version,
         generatedAt: new Date(artifacts.featureSpec.generatedAt),
-        sections: artifacts.featureSpec.sections as unknown as Prisma.InputJsonValue
+        sections: artifacts.featureSpec.sections as unknown as Prisma.InputJsonValue,
+        visualization: artifacts.featureSpec.visualization
+          ? (artifacts.featureSpec.visualization as unknown as Prisma.InputJsonValue)
+          : undefined
       },
       {
         kind: "USER_FLOW",
         title: artifacts.userFlow.title,
         version: artifacts.userFlow.version,
         generatedAt: new Date(artifacts.userFlow.generatedAt),
-        sections: artifacts.userFlow.sections as unknown as Prisma.InputJsonValue
+        sections: artifacts.userFlow.sections as unknown as Prisma.InputJsonValue,
+        visualization: artifacts.userFlow.visualization
+          ? (artifacts.userFlow.visualization as unknown as Prisma.InputJsonValue)
+          : undefined
       }
     ];
   }
