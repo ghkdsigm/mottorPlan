@@ -1,0 +1,19 @@
+{
+  "name": "mottor-plan",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.8.0",
+  "scripts": {
+    "dev": "concurrently \"npm --prefix packages/shared run build -- --watch\" \"npm --prefix apps/api run dev\" \"npm --prefix apps/web run dev\"",
+    "build": "npm --prefix packages/shared run build && npm --prefix apps/api run build && npm --prefix apps/web run build",
+    "lint": "npm --prefix packages/shared run lint && npm --prefix apps/api run lint && npm --prefix apps/web run lint",
+    "typecheck": "npm --prefix packages/shared run typecheck && npm --prefix apps/api run typecheck && npm --prefix apps/web run typecheck",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "prettier": "^3.5.3",
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.3"
+  }
+}

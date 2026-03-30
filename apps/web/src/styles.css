@@ -1,0 +1,33 @@
+:root {
+  font-family: Pretendard, "Noto Sans KR", Arial, sans-serif;
+  color: #262626;
+  background: #fbfbfb;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top, rgba(12, 58, 39, 0.07), transparent 35%),
+    linear-gradient(180deg, #f5f3ef 0%, #fbfbfb 50%, #f7faf8 100%);
+  color: #262626;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+#app {
+  min-height: 100vh;
+}

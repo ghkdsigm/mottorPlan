@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model GenerationSession {
+  id               String               @id @default(cuid())
+  workspaceName    String
+  prompt           String               @db.Text
+  status           GenerationStatus     @default(COMPLETED)
+  suggestedActions Json
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  documents        GeneratedDocument[]
+}
+
+model GeneratedDocument {
+  id          String             @id @default(cuid())
+  sessionId   String
+  kind        ArtifactKind
+  title       String
+  version     String
+  generatedAt DateTime           @default(now())
+  sections    Json
+  createdAt   DateTime           @default(now())
+  session     GenerationSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, kind])
+}
+
+enum GenerationStatus {
+  COMPLETED
+  FAILED
+}
+
+enum ArtifactKind {
+  PRD
+  FEATURE_SPEC
+  USER_FLOW
+}
