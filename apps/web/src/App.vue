@@ -747,15 +747,25 @@ async function downloadImage() {
     return;
   }
 
-  const dataUrl = await toPng(boardRef.value, {
-    cacheBust: true,
-    pixelRatio: 2
-  });
+  const board = boardRef.value;
 
-  const anchor = document.createElement("a");
-  anchor.href = dataUrl;
-  anchor.download = `${currentDocument.value.title}.png`;
-  anchor.click();
+  board.classList.add("document-board--image-export");
+
+  try {
+    await nextTick();
+
+    const dataUrl = await toPng(board, {
+      cacheBust: true,
+      pixelRatio: 2
+    });
+
+    const anchor = document.createElement("a");
+    anchor.href = dataUrl;
+    anchor.download = `${currentDocument.value.title}.png`;
+    anchor.click();
+  } finally {
+    board.classList.remove("document-board--image-export");
+  }
 }
 
 function downloadPdf() {

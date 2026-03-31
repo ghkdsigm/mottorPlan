@@ -467,6 +467,20 @@ onBeforeUnmount(() => {
   --flow-node-border: #cfd6dc;
 }
 
+:global(.document-board--image-export) .flow-chart-board__path {
+  marker-end: none;
+}
+
+:global(.document-board--image-export) .flow-chart-board__svg defs {
+  display: none;
+}
+
+:global(.document-board--image-export) .flow-chart-node__content,
+:global(.document-board--image-export) .flow-chart-node--document .flow-chart-node__content::before,
+:global(.document-board--image-export) .flow-chart-node--decision::before {
+  box-shadow: none;
+}
+
 @media (max-width: 1200px) {
   .flow-chart-board__canvas {
     min-width: max-content;
