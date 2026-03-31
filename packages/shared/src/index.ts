@@ -1,4 +1,4 @@
-export type ArtifactKind = "prd" | "feature-spec" | "user-flow";
+export type ArtifactKind = "prd" | "feature-spec" | "policy-spec" | "user-flow" | "flow-chart";
 
 export interface ArtifactSection {
   title: string;
@@ -43,7 +43,53 @@ export interface TreeMapVisualization {
   root: TreeMapNode;
 }
 
-export type ArtifactVisualization = FeatureFlowVisualization | TreeMapVisualization;
+export interface PolicyTableColumn {
+  key: string;
+  label: string;
+}
+
+export interface PolicyTableRow {
+  id: string;
+  values: Record<string, string>;
+}
+
+export interface PolicyTableVisualization {
+  type: "policy-table";
+  title: string;
+  columns: PolicyTableColumn[];
+  rows: PolicyTableRow[];
+}
+
+export type FlowChartNodeShape = "terminator" | "process" | "decision" | "document" | "subprocess";
+
+export interface FlowChartNode {
+  id: string;
+  label: string;
+  description?: string;
+  column: number;
+  row: number;
+  shape: FlowChartNodeShape;
+  accent?: VisualizationAccent;
+}
+
+export interface FlowChartEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface FlowChartVisualization {
+  type: "flow-chart";
+  title: string;
+  nodes: FlowChartNode[];
+  edges: FlowChartEdge[];
+}
+
+export type ArtifactVisualization =
+  | FeatureFlowVisualization
+  | TreeMapVisualization
+  | PolicyTableVisualization
+  | FlowChartVisualization;
 
 export interface ArtifactDocument {
   kind: ArtifactKind;
@@ -57,7 +103,9 @@ export interface ArtifactDocument {
 export interface WorkspaceArtifactSet {
   prd: ArtifactDocument;
   featureSpec: ArtifactDocument;
+  policySpec: ArtifactDocument;
   userFlow: ArtifactDocument;
+  flowChart: ArtifactDocument;
 }
 
 export interface GenerationRequest {

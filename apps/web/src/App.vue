@@ -3,19 +3,23 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { ComponentPublicInstance } from "vue";
 import { toPng } from "html-to-image";
 import jsPDF from "jspdf";
+import JSZip from "jszip";
 import type {
   ArtifactDocument,
   FeatureFlowVisualization,
+  FlowChartVisualization,
   GenerationResponse,
   HistoryItem,
+  PolicyTableVisualization,
   TreeMapNode,
   TreeMapVisualization,
   WorkspaceArtifactSet
 } from "@mottor-plan/shared";
 import { api } from "./services/api";
+import FlowChartBoard from "./components/FlowChartBoard.vue";
 import TreeMap from "./components/TreeMap.vue";
 
-type TabKey = "prd" | "featureSpec" | "userFlow";
+type TabKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
 type FeatureEdgePath = {
   id: string;
   d: string;
@@ -23,9 +27,10 @@ type FeatureEdgePath = {
   midX: number;
   midY: number;
 };
+type ExportableArtifactKey = keyof WorkspaceArtifactSet;
 
 const workspaceName = ref("홈페이지 리뉴얼 예약 보드");
-const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 유저 플로우를 생성해줘");
+const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 생성해줘");
 const activeTab = ref<TabKey>("prd");
 const isGenerating = ref(false);
 const isHistoryOpen = ref(false);
@@ -162,6 +167,70 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
       ]
     }
   },
+  policySpec: {
+    kind: "policy-spec",
+    title: "정책서",
+    version: "v1.0",
+    generatedAt: new Date().toISOString(),
+    sections: [
+      {
+        title: "정책 정의 범위",
+        summary: "서비스 운영 정책, 권한 기준, 예외 처리 규칙을 표 형태로 정리합니다.",
+        bullets: [
+          "정책 컬럼은 도메인 요구사항에 맞춰 유동적으로 생성됩니다.",
+          "정책 코드는 운영과 개발, QA가 공통으로 참조하는 기준 키로 사용합니다.",
+          "셀 구조는 고정되지 않고 AI가 필요한 key/value 조합으로 확장할 수 있습니다."
+        ]
+      }
+    ],
+    visualization: {
+      type: "policy-table",
+      title: "회의실 예약 정책 정의서",
+      columns: [
+        { key: "policyCode", label: "정책 코드" },
+        { key: "policyName", label: "정책명" },
+        { key: "detail", label: "세부 항목" },
+        { key: "user", label: "사용자" },
+        { key: "definition", label: "정책 정의" },
+        { key: "note", label: "비고" }
+      ],
+      rows: [
+        {
+          id: "policy-1",
+          values: {
+            policyCode: "meeting-book-01",
+            policyName: "회의실 예약 정책",
+            detail: "중복 예약 방지",
+            user: "로그인 사용자",
+            definition: "동일 회의실과 동일 시간에는 먼저 승인된 요청만 예약 성공 처리",
+            note: "실패 시 대체 시간 제안"
+          }
+        },
+        {
+          id: "policy-2",
+          values: {
+            policyCode: "meeting-alert-01",
+            policyName: "알림 정책",
+            detail: "예약 변경 알림",
+            user: "예약자/운영자",
+            definition: "예약 생성, 변경, 취소 시 앱 푸시와 이메일 동시 발송",
+            note: "사용자 채널 설정 반영"
+          }
+        },
+        {
+          id: "policy-3",
+          values: {
+            policyCode: "meeting-auth-01",
+            policyName: "인증 정책",
+            detail: "비밀번호 오류 제한",
+            user: "비회원/회원",
+            definition: "로그인 실패 5회 이상이면 10분간 추가 로그인 제한",
+            note: "보안 이벤트 로그 기록"
+          }
+        }
+      ]
+    }
+  },
   userFlow: {
     kind: "user-flow",
     title: "유저 플로우",
@@ -246,6 +315,141 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
         ]
       }
     }
+  },
+  flowChart: {
+    kind: "flow-chart",
+    title: "흐름도차트",
+    version: "v1.0",
+    generatedAt: new Date().toISOString(),
+    sections: [
+      {
+        title: "업무 흐름 구조",
+        summary: "흐름도는 메뉴 구조가 아니라 실제 처리 절차와 의사결정 분기를 수직 축 기준으로 표현합니다.",
+        bullets: [
+          "시작/종료, 처리, 입출력, 분기 노드를 분리해 업무 흐름을 시각화합니다.",
+          "메인 흐름은 상단에서 하단으로 이어지고, 조건 분기는 좌우로 확장됩니다.",
+          "유저플로우와 달리 IA가 아닌 프로세스 중심의 수직 도식으로 구성합니다."
+        ]
+      },
+      {
+        title: "활용 포인트",
+        summary: "기획, 개발, 운영이 같은 처리 순서를 기준으로 논의할 수 있게 설계합니다.",
+        bullets: [
+          "예외 처리와 품질 점검 분기를 한 번에 확인할 수 있습니다.",
+          "정책서와 기능명세서의 규칙을 실행 순서에 맞게 검토할 수 있습니다.",
+          "업무 절차 설명용 이미지나 문서 export에도 그대로 활용할 수 있습니다."
+        ]
+      }
+    ],
+    visualization: {
+      type: "flow-chart",
+      title: "회의실 예약 업무 흐름도",
+      nodes: [
+        {
+          id: "start",
+          label: "예약 시작",
+          description: "사용자가 예약 플로우에 진입합니다.",
+          column: 1,
+          row: 0,
+          shape: "terminator",
+          accent: "neutral"
+        },
+        {
+          id: "select-room",
+          label: "회의실 선택",
+          description: "회의실과 사용 시간을 선택합니다.",
+          column: 1,
+          row: 1,
+          shape: "process",
+          accent: "secondary"
+        },
+        {
+          id: "rule-check",
+          label: "예약 가능 여부 확인",
+          description: "중복 예약, 권한, 운영시간 정책을 검사합니다.",
+          column: 1,
+          row: 2,
+          shape: "decision",
+          accent: "primary"
+        },
+        {
+          id: "guide",
+          label: "대체 시간 안내",
+          description: "불가 시 다른 시간대와 회의실 후보를 제안합니다.",
+          column: 2,
+          row: 2,
+          shape: "document",
+          accent: "secondary"
+        },
+        {
+          id: "reserve",
+          label: "예약 생성",
+          description: "예약 엔진이 확정 상태를 생성합니다.",
+          column: 1,
+          row: 3,
+          shape: "process",
+          accent: "secondary"
+        },
+        {
+          id: "sync",
+          label: "캘린더 연동",
+          description: "Google/Outlook 일정에 동기화합니다.",
+          column: 1,
+          row: 4,
+          shape: "subprocess",
+          accent: "primary"
+        },
+        {
+          id: "notify-check",
+          label: "알림 발송 필요 여부",
+          description: "사용자 채널 설정과 상태 변경을 확인합니다.",
+          column: 1,
+          row: 5,
+          shape: "decision",
+          accent: "primary"
+        },
+        {
+          id: "notify",
+          label: "알림 발송",
+          description: "이메일과 푸시를 발송합니다.",
+          column: 1,
+          row: 6,
+          shape: "process",
+          accent: "secondary"
+        },
+        {
+          id: "skip-notify",
+          label: "즉시 완료 처리",
+          description: "알림 조건이 없으면 바로 완료 화면으로 이동합니다.",
+          column: 2,
+          row: 5,
+          shape: "document",
+          accent: "secondary"
+        },
+        {
+          id: "end",
+          label: "예약 완료",
+          description: "사용자에게 예약 결과를 노출합니다.",
+          column: 1,
+          row: 7,
+          shape: "terminator",
+          accent: "neutral"
+        }
+      ],
+      edges: [
+        { from: "start", to: "select-room" },
+        { from: "select-room", to: "rule-check" },
+        { from: "rule-check", to: "reserve", label: "YES" },
+        { from: "rule-check", to: "guide", label: "NO" },
+        { from: "guide", to: "rule-check", label: "재선택" },
+        { from: "reserve", to: "sync" },
+        { from: "sync", to: "notify-check" },
+        { from: "notify-check", to: "notify", label: "YES" },
+        { from: "notify-check", to: "skip-notify", label: "NO" },
+        { from: "notify", to: "end" },
+        { from: "skip-notify", to: "end" }
+      ]
+    }
   }
 };
 
@@ -258,8 +462,10 @@ const suggestedActions = ref<string[]>([
 
 const tabItems: Array<{ key: TabKey; label: string }> = [
   { key: "prd", label: "PRD" },
-  { key: "featureSpec", label: "기능명세서" },
-  { key: "userFlow", label: "유저플로우" }
+  { key: "featureSpec", label: "기능명세서/요구사항정의서" },
+  { key: "policySpec", label: "정책서" },
+  { key: "userFlow", label: "유저플로우" },
+  { key: "flowChart", label: "흐름도차트" }
 ];
 
 const currentDocument = computed<ArtifactDocument>(() => artifacts.value[activeTab.value]);
@@ -272,6 +478,16 @@ const featureFlowVisualization = computed<FeatureFlowVisualization | null>(() =>
 const userFlowVisualization = computed<TreeMapVisualization | null>(() => {
   const visualization = currentDocument.value.visualization;
   return visualization?.type === "tree-map" ? visualization : null;
+});
+
+const policyTableVisualization = computed<PolicyTableVisualization | null>(() => {
+  const visualization = currentDocument.value.visualization;
+  return visualization?.type === "policy-table" ? visualization : null;
+});
+
+const flowChartVisualization = computed<FlowChartVisualization | null>(() => {
+  const visualization = currentDocument.value.visualization;
+  return visualization?.type === "flow-chart" ? visualization : null;
 });
 
 const featureFlowColumns = computed(() => {
@@ -368,9 +584,19 @@ function buildFallbackResponse(): GenerationResponse {
         title: `${title || "서비스"} 기능명세서`,
         generatedAt: new Date().toISOString()
       },
+      policySpec: {
+        ...fallbackArtifacts.policySpec,
+        title: `${title || "서비스"} 정책서`,
+        generatedAt: new Date().toISOString()
+      },
       userFlow: {
         ...fallbackArtifacts.userFlow,
         title: `${title || "서비스"} 유저플로우`,
+        generatedAt: new Date().toISOString()
+      },
+      flowChart: {
+        ...fallbackArtifacts.flowChart,
+        title: `${title || "서비스"} 흐름도차트`,
         generatedAt: new Date().toISOString()
       }
     },
@@ -449,6 +675,35 @@ function formatVisualization(document: ArtifactDocument) {
     ];
   }
 
+  if (visualization.type === "policy-table") {
+    return [
+      `## ${visualization.title}`,
+      "",
+      `| ${visualization.columns.map((column) => column.label).join(" | ")} |`,
+      `| ${visualization.columns.map(() => "---").join(" | ")} |`,
+      ...visualization.rows.map((row) =>
+        `| ${visualization.columns.map((column) => row.values[column.key] ?? "").join(" | ")} |`
+      ),
+      ""
+    ];
+  }
+
+  if (visualization.type === "flow-chart") {
+    return [
+      `## ${visualization.title}`,
+      "",
+      ...visualization.nodes.map(
+        (node) =>
+          `- [${node.column},${node.row}] ${node.label} (${node.shape})${node.description ? `: ${node.description}` : ""}`
+      ),
+      "",
+      "### 연결 관계",
+      "",
+      ...visualization.edges.map((edge) => `- ${edge.from} -> ${edge.to}${edge.label ? ` (${edge.label})` : ""}`),
+      ""
+    ];
+  }
+
   function walkTree(node: TreeMapNode, depth = 0): string[] {
     return [
       `${"  ".repeat(depth)}- ${node.label}${node.description ? `: ${node.description}` : ""}`,
@@ -517,6 +772,359 @@ function downloadPdf() {
   pdf.save(`${currentDocument.value.title}.pdf`);
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderSectionsHtml(document: ArtifactDocument) {
+  return `
+    <div class="document-root">
+      ${document.sections
+        .map(
+          (section) => `
+            <section class="document-node">
+              <div class="document-node__header">
+                <span class="dot"></span>
+                <strong>${escapeHtml(section.title)}</strong>
+              </div>
+              <p>${escapeHtml(section.summary)}</p>
+              <ul>
+                ${section.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}
+              </ul>
+            </section>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderFeatureFlowHtml(visualization: FeatureFlowVisualization) {
+  const grouped = new Map<number, FeatureFlowVisualization["nodes"]>();
+  for (const node of visualization.nodes) {
+    const nodes = grouped.get(node.column) ?? [];
+    nodes.push(node);
+    grouped.set(node.column, nodes);
+  }
+
+  const columns = Array.from(grouped.entries())
+    .sort(([left], [right]) => left - right)
+    .map(
+      ([column, nodes]) => `
+        <div class="feature-flow__column">
+          <span class="feature-flow__column-title">STEP ${column + 1}</span>
+          ${nodes
+            .map(
+              (node) => `
+                <article class="flow-node flow-node--${node.accent ?? "neutral"}">
+                  <strong>${escapeHtml(node.label)}</strong>
+                  <p>${escapeHtml(node.description ?? "")}</p>
+                </article>
+              `
+            )
+            .join("")}
+        </div>
+      `
+    )
+    .join("");
+
+  const edges = visualization.edges
+    .map(
+      (edge) => `
+        <li><strong>${escapeHtml(edge.from)}</strong> -> <strong>${escapeHtml(edge.to)}</strong>${edge.label ? ` (${escapeHtml(edge.label)})` : ""}</li>
+      `
+    )
+    .join("");
+
+  return `
+    <section class="visual-section">
+      <div class="visual-section__header">
+        <div>
+          <span class="label">추가 시각화</span>
+          <h2>기능 플로우 그래프</h2>
+        </div>
+      </div>
+      <div class="feature-flow feature-flow--static">
+        <div class="feature-flow__columns">
+          ${columns}
+        </div>
+      </div>
+      <div class="html-edge-list">
+        <h3>연결 관계</h3>
+        <ul>${edges}</ul>
+      </div>
+    </section>
+  `;
+}
+
+function renderPolicyTableHtml(visualization: PolicyTableVisualization) {
+  return `
+    <section class="visual-section">
+      <div class="visual-section__header">
+        <div>
+          <span class="label">추가 시각화</span>
+          <h2>${escapeHtml(visualization.title)}</h2>
+        </div>
+      </div>
+      <div class="policy-table-wrap">
+        <table class="policy-table">
+          <thead>
+            <tr>
+              ${visualization.columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${visualization.rows
+              .map(
+                (row) => `
+                  <tr>
+                    ${visualization.columns
+                      .map((column) => `<td>${escapeHtml(row.values[column.key] ?? "-")}</td>`)
+                      .join("")}
+                  </tr>
+                `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderFlowChartHtml(visualization: FlowChartVisualization) {
+  const columnCount = visualization.nodes.reduce((acc, node) => Math.max(acc, node.column), 0) + 1;
+  const rowCount = visualization.nodes.reduce((acc, node) => Math.max(acc, node.row), 0) + 1;
+
+  const nodes = visualization.nodes
+    .map(
+      (node) => `
+        <article
+          class="html-flow-node html-flow-node--${node.shape} html-flow-node--${node.accent ?? "neutral"}"
+          style="grid-column: ${node.column + 1}; grid-row: ${node.row + 1};"
+        >
+          <div class="html-flow-node__content">
+            <strong>${escapeHtml(node.label)}</strong>
+            ${node.description ? `<p>${escapeHtml(node.description)}</p>` : ""}
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  const edges = visualization.edges
+    .map(
+      (edge) =>
+        `<li><strong>${escapeHtml(edge.from)}</strong> -> <strong>${escapeHtml(edge.to)}</strong>${edge.label ? ` (${escapeHtml(edge.label)})` : ""}</li>`
+    )
+    .join("");
+
+  return `
+    <section class="visual-section">
+      <div class="visual-section__header">
+        <div>
+          <span class="label">추가 시각화</span>
+          <h2>${escapeHtml(visualization.title)}</h2>
+        </div>
+      </div>
+      <div class="html-flow-chart">
+        <div
+          class="html-flow-chart__board"
+          style="grid-template-columns: repeat(${columnCount}, minmax(220px, 240px)); grid-template-rows: repeat(${rowCount}, minmax(140px, auto));"
+        >
+          ${nodes}
+        </div>
+      </div>
+      <div class="html-edge-list">
+        <h3>연결 관계</h3>
+        <ul>${edges}</ul>
+      </div>
+    </section>
+  `;
+}
+
+function renderTreeNodeHtml(node: TreeMapNode): string {
+  return `
+    <div class="tree-branch">
+      <div class="tree-branch__self">
+        <div class="tree-node tree-node--${node.accent ?? "neutral"}">
+          <strong>${escapeHtml(node.label)}</strong>
+          ${node.description ? `<p>${escapeHtml(node.description)}</p>` : ""}
+        </div>
+      </div>
+      ${
+        node.children?.length
+          ? `<div class="tree-branch__children">${node.children.map((child) => renderTreeNodeHtml(child)).join("")}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderTreeMapHtml(visualization: TreeMapVisualization) {
+  return `
+    <section class="visual-section">
+      <div class="visual-section__header">
+        <div>
+          <span class="label">추가 시각화</span>
+          <h2>${escapeHtml(visualization.title)}</h2>
+        </div>
+      </div>
+      <div class="tree-map">
+        ${renderTreeNodeHtml(visualization.root)}
+      </div>
+    </section>
+  `;
+}
+
+function renderVisualizationHtml(document: ArtifactDocument) {
+  const visualization = document.visualization;
+
+  if (!visualization) {
+    return "";
+  }
+
+  if (visualization.type === "feature-flow") {
+    return renderFeatureFlowHtml(visualization);
+  }
+
+  if (visualization.type === "policy-table") {
+    return renderPolicyTableHtml(visualization);
+  }
+
+  if (visualization.type === "flow-chart") {
+    return renderFlowChartHtml(visualization);
+  }
+
+  return renderTreeMapHtml(visualization);
+}
+
+function getBoardPanelHtml(document: ArtifactDocument) {
+  return `
+    <div class="board-panel-export">
+      <div class="board-toolbar">
+        <div>
+          <span class="label">현재 산출물</span>
+          <h1>${escapeHtml(document.title)}</h1>
+        </div>
+        <div class="board-meta">
+          <span>${escapeHtml(document.version)}</span>
+          <span>${escapeHtml(new Date(document.generatedAt).toLocaleString("ko-KR"))}</span>
+        </div>
+      </div>
+      <div class="document-board">
+        ${renderSectionsHtml(document)}
+        ${renderVisualizationHtml(document)}
+      </div>
+    </div>
+  `;
+}
+
+function buildStandaloneHtml(document: ArtifactDocument) {
+  const styles = `
+    body { margin: 0; padding: 24px; background: #f7faf8; font-family: Pretendard, "Noto Sans KR", Arial, sans-serif; color: #262626; }
+    .board-panel-export { padding: 22px; border: 1px solid #e8ece8; border-radius: 24px; background: rgba(255,255,255,0.96); box-shadow: 0 20px 50px rgba(12,58,39,0.08); }
+    .board-toolbar { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 20px; }
+    .board-toolbar h1 { margin: 4px 0 0; font-size: 30px; }
+    .board-meta { display: flex; gap: 12px; color: #777777; font-size: 13px; }
+    .label { display: inline-block; margin-bottom: 6px; color: #777777; font-size: 12px; font-weight: 600; }
+    .document-board { border-radius: 20px; padding: 28px; background-image: linear-gradient(rgba(0,105,77,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0,105,77,0.06) 1px, transparent 1px); background-size: 24px 24px; background-color: #fcfdfc; }
+    .document-root { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; }
+    .document-node { padding: 18px; border: 1px solid #e3e9e3; border-radius: 16px; background: #ffffff; box-shadow: 0 12px 24px rgba(12,58,39,0.04); }
+    .document-node__header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 999px; background: #fb4f4f; }
+    .document-node p, .document-node li { color: #5f5f5f; font-size: 14px; line-height: 1.5; }
+    .visual-section { margin-top: 28px; padding-top: 24px; border-top: 1px solid rgba(12,58,39,0.1); }
+    .visual-section__header { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+    .visual-section__header h2 { margin: 0; font-size: 18px; }
+    .feature-flow { overflow-x: auto; padding-bottom: 12px; }
+    .feature-flow__columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px,1fr); gap: 48px; min-width: max-content; }
+    .feature-flow__column { display: flex; flex-direction: column; gap: 18px; }
+    .feature-flow__column-title { align-self: flex-start; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.92); color: #5c665f; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+    .flow-node { padding: 14px 16px; border-radius: 14px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 20px rgba(12,58,39,0.05); }
+    .flow-node--primary { border: 1px solid rgba(0,105,77,0.35); }
+    .flow-node--secondary { border: 1px solid rgba(120,192,70,0.5); }
+    .flow-node--neutral { border: 1px solid rgba(194,214,190,0.95); }
+    .html-edge-list h3 { margin: 0 0 12px; font-size: 15px; }
+    .policy-table-wrap { overflow-x: auto; border: 1px solid #dfe6de; border-radius: 16px; background: rgba(255,255,255,0.95); }
+    .policy-table { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+    .policy-table th { padding: 12px 14px; border-bottom: 1px solid #d8dfd7; background: #f3f7f3; color: #33423a; text-align: left; white-space: nowrap; }
+    .policy-table td { padding: 12px 14px; border-bottom: 1px solid #edf1ec; color: #55645a; vertical-align: top; line-height: 1.5; }
+    .html-flow-chart { overflow-x: auto; padding: 8px 0 12px; }
+    .html-flow-chart__board { display: grid; column-gap: 72px; row-gap: 28px; width: max-content; min-width: 100%; align-items: center; padding: 10px 18px 28px; }
+    .html-flow-node { position: relative; display: flex; align-items: center; justify-content: center; min-height: 120px; justify-self: center; }
+    .html-flow-node__content { position: relative; z-index: 1; width: 220px; min-height: 84px; padding: 18px; text-align: center; background: rgba(255,255,255,0.96); box-shadow: 0 10px 24px rgba(12,58,39,0.05); }
+    .html-flow-node__content strong { display: block; font-size: 14px; line-height: 1.45; color: #2d3b34; }
+    .html-flow-node__content p { margin: 8px 0 0; color: #66756b; font-size: 12px; line-height: 1.45; }
+    .html-flow-node--process .html-flow-node__content { border: 1.5px solid #cfd6dc; border-radius: 6px; }
+    .html-flow-node--terminator .html-flow-node__content { border: 1.5px solid #cfd6dc; border-radius: 999px; }
+    .html-flow-node--document .html-flow-node__content { border: 1.5px solid #cfd6dc; clip-path: polygon(12% 0, 100% 0, 88% 100%, 0 100%); }
+    .html-flow-node--subprocess .html-flow-node__content { border: 1.5px solid #cfd6dc; border-radius: 6px; box-shadow: inset 9px 0 0 rgba(154,171,185,0.18), inset -9px 0 0 rgba(154,171,185,0.18), 0 10px 24px rgba(12,58,39,0.05); }
+    .html-flow-node--decision .html-flow-node__content { width: 196px; min-height: 130px; padding: 26px 28px; border: 1.5px solid #cfd6dc; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); display: flex; flex-direction: column; justify-content: center; }
+    .html-flow-node--primary .html-flow-node__content { border-color: rgba(0,105,77,0.34); }
+    .html-flow-node--secondary .html-flow-node__content { border-color: rgba(120,192,70,0.55); }
+    .html-flow-node--neutral .html-flow-node__content { border-color: #cfd6dc; }
+    .tree-map { overflow-x: auto; padding: 16px 8px 20px; }
+    .tree-branch { display: flex; align-items: stretch; gap: 40px; min-width: max-content; }
+    .tree-branch__self { position: relative; display: flex; align-items: center; min-width: 220px; }
+    .tree-branch__children { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 20px; padding-left: 24px; }
+    .tree-branch__children::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; border-left: 1px solid rgba(92,102,95,0.35); }
+    .tree-branch__children > .tree-branch { position: relative; }
+    .tree-branch__children > .tree-branch::before { content: ""; position: absolute; top: 50%; left: -24px; width: 24px; border-top: 1px solid rgba(92,102,95,0.35); }
+    .tree-node { min-width: 200px; max-width: 260px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.96); box-shadow: 0 8px 18px rgba(12,58,39,0.05); }
+    .tree-node strong { display: block; font-size: 14px; }
+    .tree-node p { margin: 6px 0 0; color: #66756b; font-size: 12px; line-height: 1.45; }
+    .tree-node--primary { border: 1px solid rgba(111,77,241,0.25); color: #5b34d2; background: rgba(111,77,241,0.06); }
+    .tree-node--secondary { border: 1px solid rgba(0,105,77,0.25); color: #00694d; background: rgba(0,105,77,0.06); }
+    .tree-node--neutral { border: 1px solid rgba(194,214,190,0.9); color: #33423a; }
+  `;
+
+  return `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${escapeHtml(document.title)}</title>
+    <style>${styles}</style>
+  </head>
+  <body>
+    ${getBoardPanelHtml(document)}
+  </body>
+</html>`;
+}
+
+function getExportDocuments(): Array<{ key: ExportableArtifactKey; filename: string; document: ArtifactDocument }> {
+  return [
+    { key: "prd", filename: "01-prd.html", document: artifacts.value.prd },
+    { key: "featureSpec", filename: "02-feature-spec.html", document: artifacts.value.featureSpec },
+    { key: "policySpec", filename: "03-policy-spec.html", document: artifacts.value.policySpec },
+    { key: "userFlow", filename: "04-user-flow.html", document: artifacts.value.userFlow },
+    { key: "flowChart", filename: "05-flow-chart.html", document: artifacts.value.flowChart }
+  ];
+}
+
+async function downloadHtmlArchive() {
+  const zip = new JSZip();
+
+  for (const item of getExportDocuments()) {
+    zip.file(item.filename, buildStandaloneHtml(item.document));
+  }
+
+  const blob = await zip.generateAsync({ type: "blob" });
+  const sanitizedWorkspaceName = workspaceName.value.trim().replace(/[\\/:*?"<>|]+/g, "-") || "workspace";
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${sanitizedWorkspaceName}-html-export.zip`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function handleResize() {
   updateFeatureEdgePaths();
 }
@@ -561,6 +1169,7 @@ onBeforeUnmount(() => {
         <button class="secondary-button" @click="downloadMarkdown">MD</button>
         <button class="secondary-button" @click="downloadPdf">PDF</button>
         <button class="secondary-button" @click="downloadImage">PNG</button>
+        <button class="secondary-button" @click="downloadHtmlArchive">HTML</button>
         <button class="avatar-group" @click="isHistoryOpen = !isHistoryOpen">
           <span />
           <span />
@@ -577,7 +1186,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="chat-panel__hint">
-          외부 고객은 아이디어 한 줄만 입력하고, 우측에서 PRD·기능명세서·유저 플로우를 바로 검토합니다.
+          외부 고객은 아이디어 한 줄만 입력하고, 우측에서 PRD·기능명세서·정책서·유저플로우·흐름도차트를 바로 검토합니다.
         </div>
 
         <section class="chat-panel__card">
@@ -675,6 +1284,44 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
+          <section v-if="policyTableVisualization" class="visual-section">
+            <div class="visual-section__header">
+              <div>
+                <span class="label">추가 시각화</span>
+                <h2>{{ policyTableVisualization.title }}</h2>
+              </div>
+              <p>정책 정의서는 AI가 요구사항에 맞춘 컬럼 구조를 동적으로 생성하는 테이블 형식으로 제공합니다.</p>
+            </div>
+
+            <div class="policy-table-wrap">
+              <table class="policy-table">
+                <thead>
+                  <tr>
+                    <th
+                      v-for="column in policyTableVisualization.columns"
+                      :key="column.key"
+                    >
+                      {{ column.label }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="row in policyTableVisualization.rows"
+                    :key="row.id"
+                  >
+                    <td
+                      v-for="column in policyTableVisualization.columns"
+                      :key="`${row.id}-${column.key}`"
+                    >
+                      {{ row.values[column.key] ?? "-" }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <section v-if="userFlowVisualization" class="visual-section">
             <div class="visual-section__header">
               <div>
@@ -685,6 +1332,18 @@ onBeforeUnmount(() => {
             </div>
 
             <TreeMap :visualization="userFlowVisualization" />
+          </section>
+
+          <section v-if="flowChartVisualization" class="visual-section">
+            <div class="visual-section__header">
+              <div>
+                <span class="label">추가 시각화</span>
+                <h2>{{ flowChartVisualization.title }}</h2>
+              </div>
+              <p>흐름도차트는 메인 흐름이 위에서 아래로 이어지고, 조건 분기는 좌우로 나뉘는 수직형 프로세스 다이어그램으로 제공합니다.</p>
+            </div>
+
+            <FlowChartBoard :visualization="flowChartVisualization" />
           </section>
         </div>
       </section>
@@ -759,6 +1418,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   gap: 8px;
+  font-size:14px;
 }
 
 .tab {
@@ -874,6 +1534,7 @@ onBeforeUnmount(() => {
   height: 40px;
   padding: 0 16px;
   border-radius: 10px;
+  font-size:11px;
   transition: all 0.2s ease;
 }
 
@@ -1132,6 +1793,44 @@ onBeforeUnmount(() => {
 
 .flow-node--neutral {
   border: 1px solid rgba(194, 214, 190, 0.95);
+}
+
+.policy-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #dfe6de;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.policy-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.policy-table thead th {
+  position: sticky;
+  top: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid #d8dfd7;
+  background: #f3f7f3;
+  color: #33423a;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.policy-table tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #edf1ec;
+  color: #55645a;
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.policy-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .history-panel {

@@ -41,5 +41,7 @@ enum GenerationStatus {
 enum ArtifactKind {
   PRD
   FEATURE_SPEC
+  POLICY_SPEC
   USER_FLOW
+  FLOW_CHART
 }

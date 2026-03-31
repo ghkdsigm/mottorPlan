@@ -7,7 +7,7 @@ import { PrismaService } from "../persistence/prisma.service";
 import { GenerateArtifactsDto } from "./dto";
 
 type DocumentRecordInput = {
-  kind: "PRD" | "FEATURE_SPEC" | "USER_FLOW";
+  kind: "PRD" | "FEATURE_SPEC" | "POLICY_SPEC" | "USER_FLOW" | "FLOW_CHART";
   title: string;
   version: string;
   generatedAt: Date;
@@ -78,6 +78,16 @@ export class GenerationService {
           : undefined
       },
       {
+        kind: "POLICY_SPEC",
+        title: artifacts.policySpec.title,
+        version: artifacts.policySpec.version,
+        generatedAt: new Date(artifacts.policySpec.generatedAt),
+        sections: artifacts.policySpec.sections as unknown as Prisma.InputJsonValue,
+        visualization: artifacts.policySpec.visualization
+          ? (artifacts.policySpec.visualization as unknown as Prisma.InputJsonValue)
+          : undefined
+      },
+      {
         kind: "USER_FLOW",
         title: artifacts.userFlow.title,
         version: artifacts.userFlow.version,
@@ -85,6 +95,16 @@ export class GenerationService {
         sections: artifacts.userFlow.sections as unknown as Prisma.InputJsonValue,
         visualization: artifacts.userFlow.visualization
           ? (artifacts.userFlow.visualization as unknown as Prisma.InputJsonValue)
+          : undefined
+      },
+      {
+        kind: "FLOW_CHART",
+        title: artifacts.flowChart.title,
+        version: artifacts.flowChart.version,
+        generatedAt: new Date(artifacts.flowChart.generatedAt),
+        sections: artifacts.flowChart.sections as unknown as Prisma.InputJsonValue,
+        visualization: artifacts.flowChart.visualization
+          ? (artifacts.flowChart.visualization as unknown as Prisma.InputJsonValue)
           : undefined
       }
     ];
