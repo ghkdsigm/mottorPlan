@@ -3,20 +3,22 @@ import { computed, nextTick, onMounted, ref } from "vue";
 import { toPng } from "html-to-image";
 import jsPDF from "jspdf";
 import JSZip from "jszip";
-import type {
-  ArtifactDocument,
-  ArtifactKey,
-  ArtifactVersionSummary,
-  FeatureFlowVisualization,
-  FlowChartVisualization,
-  GenerationResponse,
-  GenerationLogItem,
-  PolicyTableVisualization,
-  ProjectDetail,
-  ProjectSummary,
-  TreeMapNode,
-  TreeMapVisualization,
-  WorkspaceArtifactSet
+import {
+  DOMAIN_PRESET_OPTIONS,
+  type DomainPreset,
+  type ArtifactDocument,
+  type ArtifactKey,
+  type ArtifactVersionSummary,
+  type FeatureFlowVisualization,
+  type FlowChartVisualization,
+  type GenerationResponse,
+  type GenerationLogItem,
+  type PolicyTableVisualization,
+  type ProjectDetail,
+  type ProjectSummary,
+  type TreeMapNode,
+  type TreeMapVisualization,
+  type WorkspaceArtifactSet
 } from "@mottor-plan/shared";
 import { api } from "./services/api";
 import FeatureFlowBoard from "./components/FeatureFlowBoard.vue";
@@ -25,9 +27,12 @@ import UserFlowBoard from "./components/UserFlowBoard.vue";
 
 type TabKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
 type ExportableArtifactKey = keyof WorkspaceArtifactSet;
+type DomainPresetOption = Exclude<DomainPreset, "general" | "custom">;
 
 const projectNameInput = ref("홈페이지 리뉴얼 예약 보드");
 const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 생성해줘");
+const selectedDomainPreset = ref<DomainPreset>("general");
+const customDomainType = ref("");
 const activeTab = ref<TabKey>("prd");
 const isGenerating = ref(false);
 const isHistoryOpen = ref(false);
@@ -463,15 +468,68 @@ function createEmptyVersionMap(): Record<ArtifactKey, ArtifactVersionSummary[]> 
 
 function buildLocalProject(name: string): ProjectSummary {
   const now = new Date().toISOString();
+  const domainType = resolveDomainType() || "general";
   return {
     id: crypto.randomUUID(),
     name,
+    domainType,
     createdAt: now,
     updatedAt: now,
-    contextSummary: `${name} 프로젝트 생성`,
+    contextSummary: `${name} 프로젝트 생성 (${domainType} 도메인)`,
     lastPrompt: ""
   };
 }
+
+const domainPresetOptions = DOMAIN_PRESET_OPTIONS.filter(
+  (option): option is DomainPresetOption => option !== "general" && option !== "custom"
+);
+
+const domainPresetLabels: Record<DomainPresetOption | "general" | "custom", string> = {
+  general: "일반 서비스",
+  commerce: "커머스",
+  erp: "ERP",
+  groupware: "그룹웨어",
+  mes: "MES",
+  finance: "금융",
+  healthcare: "헬스케어",
+  logistics: "물류",
+  edtech: "에듀테크",
+  custom: "기타(직접작성)"
+};
+
+function resolveDomainType() {
+  if (selectedDomainPreset.value === "custom") {
+    return customDomainType.value.trim();
+  }
+
+  return selectedDomainPreset.value;
+}
+
+function syncDomainSelection(domainType?: string) {
+  const normalized = domainType?.trim();
+  if (!normalized) {
+    selectedDomainPreset.value = "general";
+    customDomainType.value = "";
+    return;
+  }
+
+  if ((DOMAIN_PRESET_OPTIONS as readonly string[]).includes(normalized) && normalized !== "custom") {
+    selectedDomainPreset.value = normalized as DomainPreset;
+    customDomainType.value = "";
+    return;
+  }
+
+  selectedDomainPreset.value = "custom";
+  customDomainType.value = normalized;
+}
+
+const selectedDomainLabel = computed(() => {
+  if (selectedDomainPreset.value === "custom") {
+    return customDomainType.value.trim() || "직접입력";
+  }
+
+  return domainPresetLabels[selectedDomainPreset.value];
+});
 
 const artifacts = ref<WorkspaceArtifactSet>(fallbackArtifacts);
 const suggestedActions = ref<string[]>([
@@ -513,6 +571,7 @@ const flowChartVisualization = computed<FlowChartVisualization | null>(() => {
 function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse {
   const project = currentProject.value ?? buildLocalProject(projectNameInput.value.trim() || "로컬 프로젝트");
   const normalized = prompt.value.trim();
+  const domainType = resolveDomainType() || project.domainType || "general";
   const title = normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
   const now = new Date().toISOString();
   const fallbackLogs: GenerationLogItem[] = [
@@ -531,9 +590,10 @@ function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse
   return {
     project: {
       ...project,
+      domainType,
       updatedAt: now,
       lastPrompt: normalized,
-      contextSummary: `${project.name} 프로젝트의 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`
+      contextSummary: `${project.name} 프로젝트의 ${domainType} 도메인 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`
     },
     sessionId: fallbackLogs[0].sessionId,
     artifacts: {
@@ -564,7 +624,7 @@ function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse
       }
     },
     suggestedActions: suggestedActions.value,
-    contextSummary: `${project.name} 프로젝트의 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`,
+    contextSummary: `${project.name} 프로젝트의 ${domainType} 도메인 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`,
     logs: fallbackLogs,
     versions: artifactVersions.value
   };
@@ -573,6 +633,7 @@ function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse
 function hydrateProjectDetail(detail: ProjectDetail | GenerationResponse) {
   currentProject.value = detail.project;
   projectNameInput.value = detail.project.name;
+  syncDomainSelection(detail.project.domainType);
   artifacts.value = detail.artifacts;
   suggestedActions.value = detail.suggestedActions;
   projectLogs.value = detail.logs;
@@ -609,6 +670,7 @@ async function selectProject(projectId: string) {
     if (selected) {
       currentProject.value = selected;
       projectNameInput.value = selected.name;
+      syncDomainSelection(selected.domainType);
     }
     errorMessage.value = "프로젝트를 불러오지 못했습니다.";
   }
@@ -616,15 +678,21 @@ async function selectProject(projectId: string) {
 
 async function createProject() {
   const name = projectNameInput.value.trim();
+  const domainType = resolveDomainType();
   if (!name) {
     errorMessage.value = "프로젝트명을 입력해 주세요.";
+    return;
+  }
+
+  if (!domainType) {
+    errorMessage.value = "도메인 유형을 선택하거나 직접 입력해 주세요.";
     return;
   }
 
   errorMessage.value = "";
 
   try {
-    const project = await api.createProject({ name });
+    const project = await api.createProject({ name, domainType });
     currentProject.value = project;
     artifacts.value = fallbackArtifacts;
     suggestedActions.value = [
@@ -634,7 +702,7 @@ async function createProject() {
     ];
     projectLogs.value = [];
     artifactVersions.value = createEmptyVersionMap();
-    contextSummary.value = `${project.name} 프로젝트를 생성했습니다. 이제 요청을 입력하면 누적 컨텍스트가 쌓입니다.`;
+    contextSummary.value = `${project.name} 프로젝트를 생성했습니다. 이제 ${domainType} 도메인 기준으로 누적 컨텍스트가 쌓입니다.`;
     await loadProjects();
   } catch {
     const project = buildLocalProject(name);
@@ -642,11 +710,12 @@ async function createProject() {
     projectList.value = [project, ...projectList.value.filter((item) => item.id !== project.id)];
     projectLogs.value = [];
     artifactVersions.value = createEmptyVersionMap();
-    contextSummary.value = `${project.name} 프로젝트를 로컬 상태로 생성했습니다.`;
+    contextSummary.value = `${project.name} 프로젝트를 ${project.domainType} 도메인 기준 로컬 상태로 생성했습니다.`;
   }
 }
 
 async function generateArtifacts(targetArtifact?: ArtifactKey) {
+  const domainType = resolveDomainType();
   if (!prompt.value.trim()) {
     errorMessage.value = "아이디어를 한 줄 이상 입력해 주세요.";
     return;
@@ -657,6 +726,11 @@ async function generateArtifacts(targetArtifact?: ArtifactKey) {
     return;
   }
 
+  if (!domainType) {
+    errorMessage.value = "도메인 유형을 선택하거나 직접 입력해 주세요.";
+    return;
+  }
+
   isGenerating.value = true;
   errorMessage.value = "";
 
@@ -664,7 +738,8 @@ async function generateArtifacts(targetArtifact?: ArtifactKey) {
     const response = await api.generate({
       projectId: currentProject.value.id,
       prompt: prompt.value,
-      targetArtifact
+      targetArtifact,
+      domainType
     });
     hydrateProjectDetail(response);
     await loadProjects();
@@ -1220,7 +1295,11 @@ onMounted(() => {
           <span class="label">프로젝트명</span>
           <input v-model="projectNameInput" class="text-input" placeholder="새 프로젝트명을 입력하세요" />
           <p class="project-caption">
-            {{ currentProject ? `현재 프로젝트: ${currentProject.name}` : "아직 선택된 프로젝트가 없습니다." }}
+            {{
+              currentProject
+                ? `현재 프로젝트: ${currentProject.name} · 도메인: ${currentProject.domainType ?? selectedDomainLabel}`
+                : "아직 선택된 프로젝트가 없습니다."
+            }}
           </p>
         </div>
 
@@ -1231,6 +1310,23 @@ onMounted(() => {
         <section class="chat-panel__card">
           <h2>요청 입력</h2>
           <p>업무 목적, 대상 고객, 제약조건을 포함하면 더 정교한 결과를 생성합니다. 생성 시 이전 프로젝트 문서와 로그가 함께 반영됩니다.</p>
+          <div class="domain-field">
+            <span class="label">도메인 유형</span>
+            <select v-model="selectedDomainPreset" class="text-input domain-select">
+              <option value="general">{{ domainPresetLabels.general }}</option>
+              <option v-for="option in domainPresetOptions" :key="option" :value="option">
+                {{ domainPresetLabels[option] }}
+              </option>
+              <option value="custom">{{ domainPresetLabels.custom }}</option>
+            </select>
+            <input
+              v-if="selectedDomainPreset === 'custom'"
+              v-model="customDomainType"
+              class="text-input"
+              placeholder="예: 공공행정, 부동산, 여행"
+            />
+            <p class="domain-caption">선택된 도메인 기준으로 지식 계층을 구성해 PRD부터 흐름도까지 반영합니다.</p>
+          </div>
           <textarea v-model="prompt" class="prompt-input" />
           <button class="primary-button" :disabled="isGenerating" @click="() => generateArtifacts()">
             {{ isGenerating ? "생성 중..." : "문서 생성" }}
@@ -1259,7 +1355,7 @@ onMounted(() => {
             <span class="label">현재 산출물</span>
             <h1>{{ currentDocument.title }}</h1>
             <p class="board-toolbar__project">
-              {{ currentProject ? `${currentProject.name} 프로젝트` : "프로젝트를 먼저 선택해 주세요." }}
+              {{ currentProject ? `${currentProject.name} 프로젝트 · ${currentProject.domainType ?? selectedDomainLabel} 도메인` : "프로젝트를 먼저 선택해 주세요." }}
             </p>
           </div>
           <div class="board-meta">
@@ -1569,6 +1665,33 @@ onMounted(() => {
   line-height: 1.5;
 }
 
+.domain-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.domain-select {
+  appearance: none;
+  padding-right: 40px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #5c665f 50%),
+    linear-gradient(135deg, #5c665f 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.domain-caption {
+  margin: 0;
+  color: #5c665f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .label {
   display: inline-block;
   margin-bottom: 6px;
@@ -1595,6 +1718,7 @@ onMounted(() => {
   min-height: 180px;
   padding: 14px;
   resize: vertical;
+  font-size: 14px;
 }
 
 .text-input:focus,

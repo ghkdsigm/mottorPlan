@@ -18,6 +18,7 @@ type StageOutput = {
 
 type GenerationPipelineInput = {
   projectName: string;
+  domainType: string;
   prompt: string;
   targetArtifact?: ArtifactKey;
   currentArtifacts: WorkspaceArtifactSet;
@@ -55,6 +56,7 @@ export class LlmService {
         artifactKey,
         generatedAt,
         projectName: input.projectName,
+        domainType: input.domainType,
         prompt: input.prompt,
         contextSummary: input.contextSummary,
         recentLogs: input.recentLogs,
@@ -68,8 +70,8 @@ export class LlmService {
 
     return {
       artifacts: workingArtifacts,
-      suggestedActions: this.buildSuggestedActions(workingArtifacts, input.prompt),
-      contextSummary: this.buildContextSummary(input.projectName, input.prompt, workingArtifacts),
+      suggestedActions: this.buildSuggestedActions(workingArtifacts, input.prompt, input.domainType),
+      contextSummary: this.buildContextSummary(input.projectName, input.prompt, workingArtifacts, input.domainType),
       qualityChecklists
     };
   }
@@ -78,6 +80,7 @@ export class LlmService {
     artifactKey: ArtifactKey;
     generatedAt: string;
     projectName: string;
+    domainType: string;
     prompt: string;
     contextSummary: string;
     recentLogs: GenerationLogItem[];
@@ -93,13 +96,21 @@ export class LlmService {
       };
     }
 
-    return this.buildTemplateDocument(input.artifactKey, input.projectName, input.prompt, input.generatedAt, input.currentArtifacts);
+    return this.buildTemplateDocument(
+      input.artifactKey,
+      input.projectName,
+      input.domainType,
+      input.prompt,
+      input.generatedAt,
+      input.currentArtifacts
+    );
   }
 
   private async requestStageOutput(input: {
     artifactKey: ArtifactKey;
     generatedAt: string;
     projectName: string;
+    domainType: string;
     prompt: string;
     contextSummary: string;
     recentLogs: GenerationLogItem[];
@@ -161,6 +172,7 @@ export class LlmService {
     artifactKey: ArtifactKey;
     generatedAt: string;
     projectName: string;
+    domainType: string;
     prompt: string;
     contextSummary: string;
     recentLogs: GenerationLogItem[];
@@ -177,6 +189,8 @@ export class LlmService {
       .map((log) => `- ${log.createdAt}: ${log.summary}`)
       .join("\n");
 
+    const domainKnowledgeLayer = this.buildDomainKnowledgeLayer(input.domainType);
+
     return [
       "다음 형식으로만 응답해.",
       '{ "document": { "kind": "", "title": "", "version": "draft", "generatedAt": "", "sections": [], "visualization": {} } }',
@@ -185,6 +199,8 @@ export class LlmService {
       this.getStageSchema(input.artifactKey),
       this.getStageQualityRules(input.artifactKey),
       `프로젝트명: ${input.projectName}`,
+      `도메인 유형: ${input.domainType}`,
+      `도메인 지식 계층:\n${domainKnowledgeLayer}`,
       `현재 요청: ${input.prompt}`,
       `누적 컨텍스트 요약: ${input.contextSummary}`,
       recentLogs ? `최근 생성 로그:\n${recentLogs}` : "최근 생성 로그: 없음",
@@ -300,17 +316,18 @@ export class LlmService {
     }
   }
 
-  private buildSuggestedActions(artifacts: WorkspaceArtifactSet, prompt: string): string[] {
+  private buildSuggestedActions(artifacts: WorkspaceArtifactSet, prompt: string, domainType: string): string[] {
     return [
+      `${domainType} 도메인 기준으로 핵심 엔터티와 상태 전이를 더 구체화해줘`,
       `이 요청에서 놓친 운영 정책을 ${artifacts.policySpec.title} 기준으로 보강해줘`,
       `${artifacts.userFlow.title}를 관리자/운영자 관점으로 확장해줘`,
       `${prompt.slice(0, 48)} 관련 예외 흐름과 실패 처리 시나리오를 추가해줘`
     ];
   }
 
-  private buildContextSummary(projectName: string, prompt: string, artifacts: WorkspaceArtifactSet) {
+  private buildContextSummary(projectName: string, prompt: string, artifacts: WorkspaceArtifactSet, domainType: string) {
     return [
-      `${projectName} 프로젝트는 최신 요청 "${prompt}"를 반영해 문서를 갱신했습니다.`,
+      `${projectName} 프로젝트는 ${domainType} 도메인 기준의 지식 계층과 최신 요청 "${prompt}"를 반영해 문서를 갱신했습니다.`,
       `현재 PRD는 ${artifacts.prd.sections[0]?.title ?? "목표"}를 기준으로 범위를 정의합니다.`,
       `기능명세와 정책서는 구현/운영 규칙을 분리했고, 유저플로우와 흐름도는 이를 사용자/업무 절차 관점으로 연결합니다.`
     ].join(" ");
@@ -326,6 +343,7 @@ export class LlmService {
   private buildTemplateDocument(
     artifactKey: ArtifactKey,
     projectName: string,
+    domainType: string,
     prompt: string,
     generatedAt: string,
     currentArtifacts: WorkspaceArtifactSet
@@ -335,9 +353,10 @@ export class LlmService {
         return this.createDocument("prd", `${projectName} PRD`, generatedAt, [
           {
             title: "제품 목표",
-            summary: `${projectName} 프로젝트는 ${prompt} 요청을 해결하기 위한 실무형 기획 산출물을 제공합니다.`,
+            summary: `${projectName} 프로젝트는 ${domainType} 도메인 관점을 반영해 ${prompt} 요청을 해결하기 위한 실무형 기획 산출물을 제공합니다.`,
             bullets: [
               `핵심 문제: ${prompt}`,
+              `도메인 기준: ${domainType} 도메인의 핵심 업무 흐름과 데이터 구조를 반영합니다.`,
               "대규모 시스템에서도 재사용 가능한 문서 구조를 표준화합니다.",
               "기획-디자인-개발-운영이 동일한 기준 문서를 공유합니다."
             ]
@@ -458,6 +477,65 @@ export class LlmService {
           this.buildFlowChartVisualization(projectName)
         );
     }
+  }
+
+  private buildDomainKnowledgeLayer(domainType: string) {
+    const normalized = domainType.trim().toLowerCase();
+    const layers: Record<string, string[]> = {
+      general: [
+        "1계층: 사용자/역할, 핵심 목표, 성공 지표",
+        "2계층: 주요 기능, 상태 전이, 권한 정책",
+        "3계층: 예외 처리, 운영 정책, 로그/감사, 외부 연동"
+      ],
+      commerce: [
+        "1계층: 상품, 고객, 장바구니, 주문, 결제",
+        "2계층: 재고, 배송, 쿠폰/프로모션, 반품/환불",
+        "3계층: 정산, CS, 사기탐지, 운영 배치, 로그/감사"
+      ],
+      erp: [
+        "1계층: 기준정보, 조직/권한, 거래처, 품목",
+        "2계층: 구매, 판매, 재고, 생산, 회계",
+        "3계층: 승인 워크플로우, 마감/정산, 전표, 감사 추적, 마스터 동기화"
+      ],
+      groupware: [
+        "1계층: 사용자, 조직도, 업무공간, 권한",
+        "2계층: 메일, 캘린더, 결재, 게시판, 협업 문서",
+        "3계층: 알림, 검색, 보존 정책, 감사 로그, 외부 연동"
+      ],
+      mes: [
+        "1계층: 공장, 라인, 설비, 작업자, 품목",
+        "2계층: 작업지시, 공정, 실적, 불량, 재공",
+        "3계층: 추적성, 품질 검사, 설비 인터락, 생산 리포트, ERP 연동"
+      ],
+      finance: [
+        "1계층: 고객, 계좌, 상품, 거래",
+        "2계층: 승인, 한도, 정산, 수수료, 심사",
+        "3계층: 이상거래 탐지, 규제 준수, 감사 로그, 배치 마감, 대외 연계"
+      ],
+      healthcare: [
+        "1계층: 환자, 의료진, 기관, 예약, 진료",
+        "2계층: 처방, 수납, 보험, 검사, 기록",
+        "3계층: 개인정보 보호, 접근권한, 감사 추적, 법규 준수, 외부 시스템 연동"
+      ],
+      logistics: [
+        "1계층: 화주, 주문, 창고, 차량, 기사",
+        "2계층: 입고, 출고, 배차, 배송 추적, 정산",
+        "3계층: SLA, 예외 배송, 라우팅 최적화, 클레임, 운영 모니터링"
+      ],
+      edtech: [
+        "1계층: 학습자, 강사, 과정, 콘텐츠, 평가",
+        "2계층: 수강신청, 진도, 과제, 시험, 결제",
+        "3계층: 학습 분석, 알림, 인증/부정행위 방지, 운영 리포트, 외부 LMS 연동"
+      ]
+    };
+
+    const resolved = layers[normalized] ?? [
+      `1계층: ${domainType} 도메인의 핵심 사용자, 엔터티, 목표`,
+      `2계층: ${domainType} 도메인의 주요 기능, 정책, 상태 전이`,
+      `3계층: ${domainType} 도메인의 예외 처리, 운영 절차, 로그/감사, 외부 연동`
+    ];
+
+    return resolved.map((line) => `- ${line}`).join("\n");
   }
 
   private createDocument(

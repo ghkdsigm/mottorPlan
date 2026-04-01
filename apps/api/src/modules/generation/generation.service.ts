@@ -19,12 +19,14 @@ export class GenerationService {
     const project = payload.projectId
       ? await this.projectsService.getProjectSummary(payload.projectId)
       : await this.projectsService.createProject({
-          name: payload.workspaceName ?? "새 프로젝트"
+          name: payload.workspaceName ?? "새 프로젝트",
+          domainType: payload.domainType ?? "general"
         });
 
     const projectDetail = await this.projectsService.getProjectDetail(project.id);
     const llmOutput = await this.llmService.generateProjectArtifacts({
       projectName: project.name,
+      domainType: payload.domainType ?? project.domainType ?? "general",
       prompt: payload.prompt,
       targetArtifact: payload.targetArtifact,
       currentArtifacts: projectDetail.artifacts,
@@ -36,6 +38,7 @@ export class GenerationService {
       projectId: project.id,
       prompt: payload.prompt,
       targetArtifact: payload.targetArtifact,
+      domainType: payload.domainType ?? project.domainType ?? "general",
       artifacts: llmOutput.artifacts,
       suggestedActions: llmOutput.suggestedActions,
       contextSummary: llmOutput.contextSummary,

@@ -28,6 +28,7 @@ type DocumentRow = {
 type ProjectRecord = {
   id: string;
   name: string;
+  domainType: string | null;
   contextSummary: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -49,6 +50,7 @@ type SaveGenerationResultInput = {
   projectId: string;
   prompt: string;
   targetArtifact?: ArtifactKey;
+  domainType: string;
   artifacts: WorkspaceArtifactSet;
   suggestedActions: string[];
   contextSummary: string;
@@ -114,6 +116,7 @@ export class ProjectsService {
 
   async createProject(payload: CreateProjectRequest): Promise<ProjectSummary> {
     const normalizedName = payload.name.trim();
+    const normalizedDomainType = this.normalizeDomainType(payload.domainType);
     if (!normalizedName) {
       throw new NotFoundException("프로젝트 이름이 필요합니다.");
     }
@@ -122,9 +125,10 @@ export class ProjectsService {
       const project: ProjectSummary = {
         id: crypto.randomUUID(),
         name: normalizedName,
+        domainType: normalizedDomainType,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        contextSummary: `${normalizedName} 프로젝트 생성`,
+        contextSummary: `${normalizedName} 프로젝트 생성 (${normalizedDomainType} 도메인)`,
         latestSessionId: undefined,
         lastPrompt: ""
       };
@@ -133,7 +137,7 @@ export class ProjectsService {
         project,
         artifacts: this.createEmptyArtifacts(normalizedName),
         suggestedActions: this.createDefaultSuggestedActions(),
-        contextSummary: `${normalizedName} 프로젝트 생성`,
+        contextSummary: `${normalizedName} 프로젝트 생성 (${normalizedDomainType} 도메인)`,
         logs: [],
         versions: this.createEmptyVersionMap()
       });
@@ -144,7 +148,8 @@ export class ProjectsService {
     const project = (await (this.prisma as any).project.create({
       data: {
         name: normalizedName,
-        contextSummary: `${normalizedName} 프로젝트 생성`
+        domainType: normalizedDomainType,
+        contextSummary: `${normalizedName} 프로젝트 생성 (${normalizedDomainType} 도메인)`
       }
     })) as ProjectRecord;
 
@@ -304,6 +309,7 @@ export class ProjectsService {
     await (this.prisma as any).project.update({
       where: { id: input.projectId },
       data: {
+        domainType: input.domainType,
         contextSummary: input.contextSummary
       }
     });
@@ -359,6 +365,7 @@ export class ProjectsService {
     state.contextSummary = input.contextSummary;
     state.project = {
       ...state.project,
+      domainType: input.domainType,
       updatedAt: createdAt,
       latestSessionId: sessionId,
       lastPrompt: input.prompt,
@@ -488,12 +495,13 @@ export class ProjectsService {
   }
 
   private mapProjectSummary(
-    project: { id: string; name: string; contextSummary: string | null; createdAt: Date; updatedAt: Date },
+    project: { id: string; name: string; domainType?: string | null; contextSummary: string | null; createdAt: Date; updatedAt: Date },
     latestSession?: SessionWithDocuments
   ): ProjectSummary {
     return {
       id: project.id,
       name: project.name,
+      domainType: project.domainType ?? undefined,
       createdAt: project.createdAt.toISOString(),
       updatedAt: project.updatedAt.toISOString(),
       contextSummary: project.contextSummary ?? undefined,
@@ -536,6 +544,11 @@ export class ProjectsService {
 
   private createDefaultContextSummary(projectName: string) {
     return `${projectName} 프로젝트의 최신 문서와 요청 로그를 바탕으로 다음 산출물을 개선합니다.`;
+  }
+
+  private normalizeDomainType(domainType: string | undefined) {
+    const normalized = domainType?.trim();
+    return normalized || "general";
   }
 
   private createEmptyVersionMap(): Record<ArtifactKey, ArtifactVersionSummary[]> {

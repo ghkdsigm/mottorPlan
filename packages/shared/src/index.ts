@@ -1,5 +1,18 @@
 export type ArtifactKind = "prd" | "feature-spec" | "policy-spec" | "user-flow" | "flow-chart";
 export type ArtifactKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
+export const DOMAIN_PRESET_OPTIONS = [
+  "general",
+  "commerce",
+  "erp",
+  "groupware",
+  "mes",
+  "finance",
+  "healthcare",
+  "logistics",
+  "edtech",
+  "custom"
+] as const;
+export type DomainPreset = (typeof DOMAIN_PRESET_OPTIONS)[number];
 
 export interface ArtifactSection {
   title: string;
@@ -111,11 +124,13 @@ export interface WorkspaceArtifactSet {
 
 export interface CreateProjectRequest {
   name: string;
+  domainType?: string;
 }
 
 export interface ProjectSummary {
   id: string;
   name: string;
+  domainType?: string;
   createdAt: string;
   updatedAt: string;
   contextSummary?: string;
@@ -157,6 +172,7 @@ export interface GenerationRequest {
   projectId?: string;
   workspaceName?: string;
   targetArtifact?: ArtifactKey;
+  domainType?: string;
 }
 
 export interface GenerationResponse {

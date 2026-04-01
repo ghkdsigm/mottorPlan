@@ -5,4 +5,9 @@ export class CreateProjectDto {
   @IsNotEmpty()
   @MaxLength(100)
   name!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  domainType!: string;
 }

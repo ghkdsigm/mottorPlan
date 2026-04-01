@@ -20,4 +20,10 @@ export class GenerateArtifactsDto {
   @IsOptional()
   @IsIn(["prd", "featureSpec", "policySpec", "userFlow", "flowChart"] satisfies ArtifactKey[])
   targetArtifact?: ArtifactKey;
+
+  @IsString()
+  @IsOptional()
+  @IsNotEmpty()
+  @MaxLength(100)
+  domainType?: string;
 }
