@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import dagre from "dagre";
-import { computed, markRaw } from "vue";
+import { computed, markRaw, onBeforeUnmount, ref } from "vue";
 import { MarkerType, VueFlow, type Edge, type Node } from "@vue-flow/core";
 import type { TreeMapNode, TreeMapVisualization } from "@mottor-plan/shared";
 import UserFlowNode from "./UserFlowNode.vue";
@@ -18,10 +18,46 @@ const nodeTypes = {
 const graphState = computed(() => buildGraphState(props.visualization));
 const flowNodes = computed(() => graphState.value.nodes);
 const flowEdges = computed(() => graphState.value.edges);
+const boardRef = ref<HTMLElement | null>(null);
+const isDragging = ref(false);
+let dragStartX = 0;
+let dragStartScrollLeft = 0;
+
 const boardStyle = computed(() => ({
   width: `${graphState.value.width}px`,
   height: `${graphState.value.height}px`
 }));
+
+function handlePointerDown(event: PointerEvent) {
+  if (event.button !== 0 || !boardRef.value) {
+    return;
+  }
+
+  isDragging.value = true;
+  dragStartX = event.clientX;
+  dragStartScrollLeft = boardRef.value.scrollLeft;
+  window.addEventListener("pointermove", handlePointerMove);
+  window.addEventListener("pointerup", handlePointerUp);
+}
+
+function handlePointerMove(event: PointerEvent) {
+  if (!isDragging.value || !boardRef.value) {
+    return;
+  }
+
+  const deltaX = event.clientX - dragStartX;
+  boardRef.value.scrollLeft = dragStartScrollLeft - deltaX;
+}
+
+function handlePointerUp() {
+  isDragging.value = false;
+  window.removeEventListener("pointermove", handlePointerMove);
+  window.removeEventListener("pointerup", handlePointerUp);
+}
+
+onBeforeUnmount(() => {
+  handlePointerUp();
+});
 
 function buildGraphState(visualization: TreeMapVisualization) {
   const graph = new dagre.graphlib.Graph();
@@ -113,7 +149,11 @@ function walkTree(node: TreeMapNode, visit: (node: TreeMapNode, parent?: TreeMap
 </script>
 
 <template>
-  <div class="user-flow-board">
+  <div
+    ref="boardRef"
+    :class="['user-flow-board', { 'user-flow-board--dragging': isDragging }]"
+    @pointerdown.capture="handlePointerDown"
+  >
     <div class="user-flow-board__canvas" :style="boardStyle">
       <VueFlow
         :nodes="flowNodes"
@@ -138,6 +178,7 @@ function walkTree(node: TreeMapNode, visit: (node: TreeMapNode, parent?: TreeMap
   overflow-x: auto;
   overflow-y: hidden;
   padding: 16px 8px 20px;
+  cursor: grab;
 }
 
 .user-flow-board__canvas {
@@ -155,8 +196,13 @@ function walkTree(node: TreeMapNode, visit: (node: TreeMapNode, parent?: TreeMap
   height: 100%;
 }
 
+.user-flow-board--dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
 :deep(.user-flow-board__flow .vue-flow__pane) {
-  cursor: default;
+  cursor: inherit;
 }
 
 :deep(.user-flow-board__flow .vue-flow__viewport) {

@@ -66,6 +66,18 @@ export class LlmService {
       workingArtifacts[artifactKey] = generatedDocument;
     }
 
+    if (startIndex === 0) {
+      workingArtifacts.prd = await this.refinePrdDocument({
+        generatedAt,
+        projectName: input.projectName,
+        domainType: input.domainType,
+        prompt: input.prompt,
+        contextSummary: input.contextSummary,
+        recentLogs: input.recentLogs,
+        currentArtifacts: workingArtifacts
+      });
+    }
+
     const qualityChecklists = this.buildQualityChecklistMap(workingArtifacts);
 
     return {
@@ -85,6 +97,8 @@ export class LlmService {
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
+    supportingArtifactsSummary?: string;
+    generationDirective?: string;
   }): Promise<ArtifactDocument> {
     const response = await this.requestStageOutput(input);
 
@@ -102,8 +116,38 @@ export class LlmService {
       input.domainType,
       input.prompt,
       input.generatedAt,
+      input.currentArtifacts,
+      input.generationDirective
+    );
+  }
+
+  private async refinePrdDocument(input: {
+    generatedAt: string;
+    projectName: string;
+    domainType: string;
+    prompt: string;
+    contextSummary: string;
+    recentLogs: GenerationLogItem[];
+    currentArtifacts: WorkspaceArtifactSet;
+  }): Promise<ArtifactDocument> {
+    const supportingArtifactsSummary = this.buildArtifactSummaryList(
+      ["featureSpec", "policySpec", "userFlow", "flowChart"],
       input.currentArtifacts
     );
+
+    return this.generateArtifactStage({
+      artifactKey: "prd",
+      generatedAt: input.generatedAt,
+      projectName: input.projectName,
+      domainType: input.domainType,
+      prompt: input.prompt,
+      contextSummary: input.contextSummary,
+      recentLogs: input.recentLogs,
+      currentArtifacts: input.currentArtifacts,
+      supportingArtifactsSummary,
+      generationDirective:
+        "이번 PRD는 최종 정제본이다. 기능명세서, 정책서, 유저플로우, 흐름도차트의 내용을 역으로 참고해 PRD를 더 구체적이고 무겁게 정리하라. 다른 산출물과 충돌하는 모호한 표현은 제거하고, 범위/우선순위/타임라인/제외범위를 명확히 적어라."
+    });
   }
 
   private async requestStageOutput(input: {
@@ -115,6 +159,8 @@ export class LlmService {
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
+    supportingArtifactsSummary?: string;
+    generationDirective?: string;
   }): Promise<StageOutput | null> {
     const apiKey = this.configService.get<string>("LLM_API_KEY");
     const baseUrl = this.configService.get<string>("LLM_BASE_URL");
@@ -177,12 +223,13 @@ export class LlmService {
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
+    supportingArtifactsSummary?: string;
+    generationDirective?: string;
   }) {
-    const previousArtifacts = artifactOrder
-      .slice(0, artifactOrder.indexOf(input.artifactKey))
-      .filter((artifactKey) => this.isGeneratedDocument(input.currentArtifacts[artifactKey]))
-      .map((artifactKey) => this.summarizeDocument(input.currentArtifacts[artifactKey]))
-      .join("\n\n");
+    const previousArtifacts = this.buildArtifactSummaryList(
+      artifactOrder.slice(0, artifactOrder.indexOf(input.artifactKey)),
+      input.currentArtifacts
+    );
 
     const recentLogs = input.recentLogs
       .slice(0, 5)
@@ -202,12 +249,16 @@ export class LlmService {
       `도메인 유형: ${input.domainType}`,
       `도메인 지식 계층:\n${domainKnowledgeLayer}`,
       `현재 요청: ${input.prompt}`,
+      input.generationDirective ? `추가 지시사항: ${input.generationDirective}` : "",
       `누적 컨텍스트 요약: ${input.contextSummary}`,
       recentLogs ? `최근 생성 로그:\n${recentLogs}` : "최근 생성 로그: 없음",
       previousArtifacts ? `이전 단계 산출물 요약:\n${previousArtifacts}` : "이전 단계 산출물 요약: 없음",
+      input.supportingArtifactsSummary ? `참고 산출물 요약:\n${input.supportingArtifactsSummary}` : "",
       `이번에 생성할 대상: ${input.artifactKey}`,
       `generatedAt에는 ${input.generatedAt}를 사용해`
-    ].join("\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   private getStageSchema(artifactKey: ArtifactKey) {
@@ -216,7 +267,17 @@ export class LlmService {
         return [
           'document.kind는 "prd"다.',
           'visualization은 포함하지 않아도 된다.',
-          "PRD에는 최소한 제품 목표, 핵심 사용자, KPI, 범위/제약조건을 포함한다."
+          "PRD는 가볍게 쓰지 말고 실제 리뷰 가능한 수준으로 상세히 작성한다.",
+          "section title은 다음 항목을 빠짐없이 포함해야 한다: 프로젝트명, 설명, 문제, 왜, 성공, 고객, 무엇, 어떻게, 언제.",
+          "프로젝트명은 간결하고 명확한 이름으로 작성한다.",
+          "설명은 무엇인지에 대한 간략한 설명을 작성한다.",
+          "문제는 이 기능이 해결하려는 구체적인 문제를 적는다.",
+          "왜는 이 문제가 해결할 가치가 있다는 근거와 사업적 이유를 적는다.",
+          "성공은 이 문제가 해결됐는지 측정할 수 있는 KPI와 측정 방식을 적는다.",
+          "고객은 대상 사용자 그룹과 핵심 특성을 적는다.",
+          "무엇은 제품에서 이 기능이 어떤 모습으로 제공될지, 핵심 범위와 요구사항을 적는다.",
+          "어떻게는 검증 또는 실험 계획, 출시 전 확인 항목을 적는다.",
+          "언제는 주요 마일스톤과 배포 계획을 적는다."
         ].join("\n");
       case "featureSpec":
         return [
@@ -253,7 +314,14 @@ export class LlmService {
     ];
 
     const stageRules: Record<ArtifactKey, string[]> = {
-      prd: ["목표, 범위, 핵심 사용자, KPI, 제약조건을 분리한다."],
+      prd: [
+        "프로젝트명/설명/문제/왜/성공/고객/무엇/어떻게/언제를 각각 분리한다.",
+        "문제와 왜는 구체적인 현업 pain point와 추진 근거 중심으로 적는다.",
+        "성공에는 KPI와 측정 방법을 함께 적는다.",
+        "고객과 무엇에는 대상 사용자와 제품 범위를 명확히 적는다.",
+        "어떻게에는 실험 계획 또는 검증 계획을 포함한다.",
+        "가능하면 다른 산출물과 연결되는 근거를 PRD 문장에 녹인다."
+      ],
       featureSpec: ["기능별 흐름과 시스템 책임, 예외 처리, 비기능 요구사항을 분리한다."],
       policySpec: ["권한, 승인, 예외, 조건, 로그 관점을 테이블에 반영한다."],
       userFlow: ["메뉴 구조뿐 아니라 사용자 역할별 주요 경로를 포함한다."],
@@ -304,7 +372,12 @@ export class LlmService {
 
     switch (artifactKey) {
       case "prd":
-        return [...base, "목표/KPI/범위/제약 조건을 분리했는지 확인"];
+        return [
+          ...base,
+          "프로젝트명/설명/문제/왜/성공/고객/무엇/어떻게/언제를 모두 포함했는지 확인",
+          "KPI가 측정 가능한 수치 또는 기준으로 표현됐는지 확인",
+          "문제 정의와 추진 근거, 실험 계획, 마일스톤이 구체적인지 확인"
+        ];
       case "featureSpec":
         return [...base, "기능 플로우, 예외 처리, 비기능 요구사항을 포함했는지 확인"];
       case "policySpec":
@@ -340,36 +413,125 @@ export class LlmService {
     ].join("\n");
   }
 
+  private buildArtifactSummaryList(keys: ArtifactKey[], currentArtifacts: WorkspaceArtifactSet) {
+    return keys
+      .filter((artifactKey) => this.isGeneratedDocument(currentArtifacts[artifactKey]))
+      .map((artifactKey) => this.summarizeDocument(currentArtifacts[artifactKey]))
+      .join("\n\n");
+  }
+
   private buildTemplateDocument(
     artifactKey: ArtifactKey,
     projectName: string,
     domainType: string,
     prompt: string,
     generatedAt: string,
-    currentArtifacts: WorkspaceArtifactSet
+    currentArtifacts: WorkspaceArtifactSet,
+    generationDirective?: string
   ): ArtifactDocument {
     switch (artifactKey) {
       case "prd":
+        const downstreamReferences = [
+          this.isGeneratedDocument(currentArtifacts.featureSpec)
+            ? `${currentArtifacts.featureSpec.title}에서 기능 범위와 우선순위를 참고합니다.`
+            : "기능명세서는 이후 기능 범위와 우선순위 상세화의 기준이 됩니다.",
+          this.isGeneratedDocument(currentArtifacts.policySpec)
+            ? `${currentArtifacts.policySpec.title}에서 권한, 승인, 예외 정책을 반영합니다.`
+            : "정책서는 권한, 승인, 예외 처리 기준으로 이어집니다.",
+          this.isGeneratedDocument(currentArtifacts.userFlow)
+            ? `${currentArtifacts.userFlow.title}에서 역할별 사용자 여정을 참고합니다.`
+            : "유저플로우는 사용자 여정과 진입 경로를 구체화합니다.",
+          this.isGeneratedDocument(currentArtifacts.flowChart)
+            ? `${currentArtifacts.flowChart.title}에서 실제 업무 절차와 분기 흐름을 참고합니다.`
+            : "흐름도차트는 실제 운영 절차와 분기 조건을 정리합니다."
+        ];
+
         return this.createDocument("prd", `${projectName} PRD`, generatedAt, [
           {
-            title: "제품 목표",
-            summary: `${projectName} 프로젝트는 ${domainType} 도메인 관점을 반영해 ${prompt} 요청을 해결하기 위한 실무형 기획 산출물을 제공합니다.`,
+            title: "프로젝트명",
+            summary: `${projectName}`,
             bullets: [
-              `핵심 문제: ${prompt}`,
-              `도메인 기준: ${domainType} 도메인의 핵심 업무 흐름과 데이터 구조를 반영합니다.`,
-              "대규모 시스템에서도 재사용 가능한 문서 구조를 표준화합니다.",
-              "기획-디자인-개발-운영이 동일한 기준 문서를 공유합니다."
+              "간결하고 명확한 프로젝트 명칭을 사용합니다.",
+              `도메인 기준: ${domainType}`,
+              generationDirective ? `추가 정제 방향: ${generationDirective}` : "추가 정제 방향: 실제 리뷰 가능한 기획 문서 수준으로 정리합니다."
             ]
           },
           {
-            title: "주요 사용자 및 이해관계자",
-            summary: "실제 운영 조직 기준으로 문서 소비자와 사용자 집단을 구분합니다.",
-            bullets: ["PM/PO", "서비스기획자", "운영자/관리자", "개발/QA 리드"]
+            title: "설명",
+            summary: `${projectName} 프로젝트는 ${prompt} 요구를 해결하기 위한 제품/기능 기획입니다.`,
+            bullets: [
+              `무엇인지: ${prompt} 요구를 서비스/업무 흐름에 반영하는 방안을 정의합니다.`,
+              "제품, 정책, 사용자 흐름, 업무 절차를 하나의 기준 문서로 정렬합니다.",
+              "기획-디자인-개발-운영이 동일한 설명을 기반으로 협업할 수 있게 합니다."
+            ]
           },
           {
-            title: "핵심 지표 및 제약",
-            summary: "성과 지표와 제약조건을 함께 정의합니다.",
-            bullets: ["처리 시간, 성공률, 재사용률", "권한/예외/로그 추적 필요", "대규모 운영 대응성 확보"]
+            title: "문제",
+            summary: "이 기능이 해결하려는 구체적인 문제를 정의합니다.",
+            bullets: [
+              `핵심 문제: ${prompt}`,
+              "요구사항이 문서별로 분산되면 해석 차이와 재작업이 발생합니다.",
+              "정책, 기능, 사용자 흐름, 운영 절차가 분리되면 리뷰와 구현 과정에서 누락이 생길 수 있습니다."
+            ]
+          },
+          {
+            title: "왜",
+            summary: "이 문제를 해결할 가치가 있다는 근거를 정리합니다.",
+            bullets: [
+              `${domainType} 도메인에서는 요구사항 명확도와 운영 정합성이 서비스 품질에 직접 영향을 줍니다.`,
+              "문제 정의가 정확해지면 개발 우선순위, 운영 기준, QA 범위를 더 빠르게 합의할 수 있습니다.",
+              "초기 기획 단계에서 구조화된 문서를 만들면 출시 지연과 커뮤니케이션 비용을 줄일 수 있습니다."
+            ]
+          },
+          {
+            title: "성공",
+            summary: "문제 해결 여부를 판단할 KPI와 측정 방법을 정의합니다.",
+            bullets: [
+              "성공 기준 예시: 기획 초안 작성 리드타임 단축",
+              "성공 기준 예시: 리뷰 단계의 요구사항 누락 건수 감소",
+              "측정 방법: 문서 작성 시간, 수정 반복 횟수, 재작업 건수, 리뷰 피드백 유형을 추적합니다.",
+              "품질 기준: PRD와 기능명세서/정책서/유저플로우/흐름도 간 용어와 범위가 상충하지 않아야 합니다."
+            ]
+          },
+          {
+            title: "고객",
+            summary: "이 기능의 대상 사용자 그룹을 정의합니다.",
+            bullets: [
+              "주 고객: 서비스 기획자 및 PM/PO",
+              "부 고객: 운영자/관리자",
+              "협업 이해관계자: 개발 리드, QA 리드, 디자이너",
+              "고객 특성: 빠른 초안 작성, 명확한 정책 정의, 구현 가능한 요구사항 문서를 필요로 합니다."
+            ]
+          },
+          {
+            title: "무엇",
+            summary: "제품에서 이 기능이 어떤 모습으로 제공될지 설명합니다.",
+            bullets: [
+              "핵심 기능: 프로젝트 생성/불러오기, 문서 순차 생성, 문서별 재생성, 버전/로그 저장",
+              "산출물 범위: PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트",
+              "운영 요구사항: 권한, 예외 처리, 변경 이력, 검토 근거를 문서에 반영해야 합니다.",
+              ...downstreamReferences
+            ]
+          },
+          {
+            title: "어떻게",
+            summary: "실험 계획과 검증 계획을 정의합니다.",
+            bullets: [
+              "실험 가설: 구조화된 PRD를 먼저 제시하면 후속 문서의 정합성과 리뷰 속도가 개선됩니다.",
+              "검증 방식: 동일 요청에 대해 기존 방식과 개선된 방식의 문서 품질과 리뷰 시간을 비교합니다.",
+              "검증 항목: 누락 요구사항 수, 예외 처리 명시 여부, 운영 정책 반영 수준, 이해관계자 피드백",
+              "출시 전 점검: 주요 기능, 정책, 흐름, 버전 저장, 다운로드 기능이 정상 동작하는지 확인합니다."
+            ]
+          },
+          {
+            title: "언제",
+            summary: "주요 마일스톤과 배포 계획을 정리합니다.",
+            bullets: [
+              "1차 마일스톤: 요구사항 정리 및 PRD 구조 확정",
+              "2차 마일스톤: 기능명세/정책서/유저플로우/흐름도 연계 정리",
+              "3차 마일스톤: 검증 및 보완, 이해관계자 리뷰 반영",
+              "배포 계획: QA 완료 후 단계 배포, 초기 피드백 수집 후 후속 개선 반영"
+            ]
           }
         ]);
       case "featureSpec":

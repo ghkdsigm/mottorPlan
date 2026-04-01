@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, markRaw } from "vue";
+import { computed, markRaw, onBeforeUnmount, ref } from "vue";
 import { MarkerType, Position, VueFlow, type Edge, type Node } from "@vue-flow/core";
 import type { FeatureFlowVisualization } from "@mottor-plan/shared";
 import FeatureFlowNode from "./FeatureFlowNode.vue";
@@ -18,10 +18,46 @@ const graphState = computed(() => buildGraphState(props.visualization));
 
 const flowNodes = computed(() => graphState.value.nodes);
 const flowEdges = computed(() => graphState.value.edges);
+const boardRef = ref<HTMLElement | null>(null);
+const isDragging = ref(false);
+let dragStartX = 0;
+let dragStartScrollLeft = 0;
+
 const boardStyle = computed(() => ({
   width: `${graphState.value.width}px`,
   height: `${graphState.value.height}px`
 }));
+
+function handlePointerDown(event: PointerEvent) {
+  if (event.button !== 0 || !boardRef.value) {
+    return;
+  }
+
+  isDragging.value = true;
+  dragStartX = event.clientX;
+  dragStartScrollLeft = boardRef.value.scrollLeft;
+  window.addEventListener("pointermove", handlePointerMove);
+  window.addEventListener("pointerup", handlePointerUp);
+}
+
+function handlePointerMove(event: PointerEvent) {
+  if (!isDragging.value || !boardRef.value) {
+    return;
+  }
+
+  const deltaX = event.clientX - dragStartX;
+  boardRef.value.scrollLeft = dragStartScrollLeft - deltaX;
+}
+
+function handlePointerUp() {
+  isDragging.value = false;
+  window.removeEventListener("pointermove", handlePointerMove);
+  window.removeEventListener("pointerup", handlePointerUp);
+}
+
+onBeforeUnmount(() => {
+  handlePointerUp();
+});
 
 function buildGraphState(visualization: FeatureFlowVisualization) {
   const nodeWidth = 220;
@@ -118,7 +154,11 @@ function buildGraphState(visualization: FeatureFlowVisualization) {
 </script>
 
 <template>
-  <div class="feature-flow-board">
+  <div
+    ref="boardRef"
+    :class="['feature-flow-board', { 'feature-flow-board--dragging': isDragging }]"
+    @pointerdown.capture="handlePointerDown"
+  >
     <div class="feature-flow-board__canvas" :style="boardStyle">
       <VueFlow
         :nodes="flowNodes"
@@ -143,6 +183,7 @@ function buildGraphState(visualization: FeatureFlowVisualization) {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 12px 0 8px;
+  cursor: grab;
 }
 
 .feature-flow-board__canvas {
@@ -160,8 +201,13 @@ function buildGraphState(visualization: FeatureFlowVisualization) {
   height: 100%;
 }
 
+.feature-flow-board--dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
 :deep(.feature-flow-board__flow .vue-flow__pane) {
-  cursor: default;
+  cursor: inherit;
 }
 
 :deep(.feature-flow-board__flow .vue-flow__viewport) {

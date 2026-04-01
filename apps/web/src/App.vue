@@ -1289,7 +1289,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <main class="workspace">
+    <main :class="['workspace', { 'workspace--history-open': isHistoryOpen }]">
       <aside class="chat-panel">
         <div class="chat-panel__card">
           <span class="label">프로젝트명</span>
@@ -1592,10 +1592,8 @@ onMounted(() => {
 
 .export-toolbar {
   margin-top: 12px;
-  padding: 10px 16px;
-  border: 1px solid rgba(194, 214, 190, 0.7);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
+  padding: 5px 16px;
+  
 }
 
 .export-toolbar__inner {
@@ -1606,10 +1604,14 @@ onMounted(() => {
 
 .workspace {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 0;
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 20px;
   margin-top: 20px;
   align-items: start;
+}
+
+.workspace--history-open {
+  grid-template-columns: 320px minmax(0, 1fr) 320px;
 }
 
 .chat-panel,
@@ -1629,7 +1631,7 @@ onMounted(() => {
 .history-card {
   border: 1px solid #e8ece8;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.5);
   box-shadow: 0 12px 32px rgba(12, 58, 39, 0.05);
 }
 
@@ -1704,7 +1706,7 @@ onMounted(() => {
 .prompt-input {
   width: 100%;
   border: 1px solid #d9ded9;
-  border-radius: 14px;
+  border-radius: 6px;
   background: #ffffff;
   transition: border-color 0.2s ease;
 }
@@ -1732,7 +1734,7 @@ onMounted(() => {
   height: 40px;
   padding: 0 16px;
   border-radius: 10px;
-  font-size:11px;
+  font-size:13px;
   transition: all 0.2s ease;
 }
 
@@ -1741,7 +1743,7 @@ onMounted(() => {
   border: 0;
   background: #00694d;
   color: #ffffff;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .primary-button:disabled {
@@ -1869,6 +1871,7 @@ onMounted(() => {
   height: 10px;
   border-radius: 999px;
   background: #fb4f4f;
+  display:none;
 }
 
 .document-node p,
