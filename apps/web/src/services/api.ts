@@ -1,4 +1,11 @@
-import type { GenerationRequest, GenerationResponse, HistoryItem } from "@mottor-plan/shared";
+import type {
+  CreateProjectRequest,
+  GenerationRequest,
+  GenerationResponse,
+  HistoryItem,
+  ProjectDetail,
+  ProjectSummary
+} from "@mottor-plan/shared";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
 
@@ -25,6 +32,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     });
+  },
+  createProject(payload: CreateProjectRequest) {
+    return request<ProjectSummary>("/projects", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+  getProjects() {
+    return request<ProjectSummary[]>("/projects");
+  },
+  getProjectDetail(projectId: string) {
+    return request<ProjectDetail>(`/projects/${projectId}`);
   },
   getHistory() {
     return request<HistoryItem[]>("/history");

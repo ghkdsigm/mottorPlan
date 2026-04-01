@@ -7,30 +7,52 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Project {
+  id             String              @id @default(cuid())
+  name           String
+  contextSummary String?             @db.Text
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  sessions       GenerationSession[]
+
+  @@index([updatedAt])
+}
+
 model GenerationSession {
   id               String               @id @default(cuid())
-  workspaceName    String
+  projectId        String
   prompt           String               @db.Text
   status           GenerationStatus     @default(COMPLETED)
+  targetArtifact   ArtifactKind?
   suggestedActions Json
+  contextSummary   String?              @db.Text
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   documents        GeneratedDocument[]
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
 }
 
 model GeneratedDocument {
-  id          String             @id @default(cuid())
-  sessionId   String
-  kind        ArtifactKind
-  title       String
-  version     String
-  generatedAt DateTime           @default(now())
-  sections    Json
-  visualization Json?
-  createdAt   DateTime           @default(now())
-  session     GenerationSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  id               String             @id @default(cuid())
+  sessionId        String
+  kind             ArtifactKind
+  title            String
+  version          String
+  generatedAt      DateTime           @default(now())
+  sections         Json
+  visualization    Json?
+  qualityChecklist Json?
+  parentDocumentId String?
+  createdAt        DateTime           @default(now())
+  session          GenerationSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  parentDocument   GeneratedDocument? @relation("DocumentLineage", fields: [parentDocumentId], references: [id], onDelete: SetNull)
+  childVersions    GeneratedDocument[] @relation("DocumentLineage")
 
   @@index([sessionId, kind])
+  @@index([kind, createdAt])
+  @@index([parentDocumentId])
 }
 
 enum GenerationStatus {

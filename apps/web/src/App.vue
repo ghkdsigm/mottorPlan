@@ -1,45 +1,43 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { ComponentPublicInstance } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { toPng } from "html-to-image";
 import jsPDF from "jspdf";
 import JSZip from "jszip";
 import type {
   ArtifactDocument,
+  ArtifactKey,
+  ArtifactVersionSummary,
   FeatureFlowVisualization,
   FlowChartVisualization,
   GenerationResponse,
-  HistoryItem,
+  GenerationLogItem,
   PolicyTableVisualization,
+  ProjectDetail,
+  ProjectSummary,
   TreeMapNode,
   TreeMapVisualization,
   WorkspaceArtifactSet
 } from "@mottor-plan/shared";
 import { api } from "./services/api";
+import FeatureFlowBoard from "./components/FeatureFlowBoard.vue";
 import FlowChartBoard from "./components/FlowChartBoard.vue";
-import TreeMap from "./components/TreeMap.vue";
+import UserFlowBoard from "./components/UserFlowBoard.vue";
 
 type TabKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
-type FeatureEdgePath = {
-  id: string;
-  d: string;
-  label?: string;
-  midX: number;
-  midY: number;
-};
 type ExportableArtifactKey = keyof WorkspaceArtifactSet;
 
-const workspaceName = ref("홈페이지 리뉴얼 예약 보드");
+const projectNameInput = ref("홈페이지 리뉴얼 예약 보드");
 const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 생성해줘");
 const activeTab = ref<TabKey>("prd");
 const isGenerating = ref(false);
 const isHistoryOpen = ref(false);
-const history = ref<HistoryItem[]>([]);
+const currentProject = ref<ProjectSummary | null>(null);
+const projectList = ref<ProjectSummary[]>([]);
+const projectLogs = ref<GenerationLogItem[]>([]);
+const artifactVersions = ref<Record<ArtifactKey, ArtifactVersionSummary[]>>(createEmptyVersionMap());
+const contextSummary = ref("프로젝트를 생성하거나 기존 프로젝트를 불러오면 누적 컨텍스트와 로그가 여기에 쌓입니다.");
 const boardRef = ref<HTMLElement | null>(null);
-const featureFlowHostRef = ref<HTMLElement | null>(null);
 const errorMessage = ref("");
-const featureEdgePaths = ref<FeatureEdgePath[]>([]);
-const featureNodeElements = new Map<string, HTMLElement>();
 
 const fallbackArtifacts: WorkspaceArtifactSet = {
   prd: {
@@ -453,6 +451,28 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
   }
 };
 
+function createEmptyVersionMap(): Record<ArtifactKey, ArtifactVersionSummary[]> {
+  return {
+    prd: [],
+    featureSpec: [],
+    policySpec: [],
+    userFlow: [],
+    flowChart: []
+  };
+}
+
+function buildLocalProject(name: string): ProjectSummary {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    contextSummary: `${name} 프로젝트 생성`,
+    lastPrompt: ""
+  };
+}
+
 const artifacts = ref<WorkspaceArtifactSet>(fallbackArtifacts);
 const suggestedActions = ref<string[]>([
   "핵심 사용자군 3개를 정의해줘",
@@ -490,138 +510,150 @@ const flowChartVisualization = computed<FlowChartVisualization | null>(() => {
   return visualization?.type === "flow-chart" ? visualization : null;
 });
 
-const featureFlowColumns = computed(() => {
-  if (!featureFlowVisualization.value) {
-    return [];
-  }
-
-  const grouped = new Map<number, FeatureFlowVisualization["nodes"]>();
-  for (const node of featureFlowVisualization.value.nodes) {
-    const nodes = grouped.get(node.column) ?? [];
-    nodes.push(node);
-    grouped.set(node.column, nodes);
-  }
-
-  return Array.from(grouped.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([column, nodes]) => ({
-      column,
-      nodes
-    }));
-});
-
-function setFeatureNodeRef(nodeId: string) {
-  return (element: Element | ComponentPublicInstance | null) => {
-    if (element instanceof HTMLElement) {
-      featureNodeElements.set(nodeId, element);
-      return;
-    }
-    featureNodeElements.delete(nodeId);
-  };
-}
-
-function updateFeatureEdgePaths() {
-  const visualization = featureFlowVisualization.value;
-  const host = featureFlowHostRef.value;
-
-  if (!visualization || !host) {
-    featureEdgePaths.value = [];
-    return;
-  }
-
-  const hostRect = host.getBoundingClientRect();
-
-  featureEdgePaths.value = visualization.edges.flatMap((edge) => {
-    const fromElement = featureNodeElements.get(edge.from);
-    const toElement = featureNodeElements.get(edge.to);
-
-    if (!fromElement || !toElement) {
-      return [];
-    }
-
-    const fromRect = fromElement.getBoundingClientRect();
-    const toRect = toElement.getBoundingClientRect();
-    const startX = fromRect.right - hostRect.left;
-    const startY = fromRect.top - hostRect.top + fromRect.height / 2;
-    const endX = toRect.left - hostRect.left;
-    const endY = toRect.top - hostRect.top + toRect.height / 2;
-    const curveOffset = Math.max((endX - startX) * 0.45, 36);
-    const midX = startX + (endX - startX) / 2;
-    const midY = startY + (endY - startY) / 2;
-
-    return [
-      {
-        id: `${edge.from}-${edge.to}`,
-        d: `M ${startX} ${startY} C ${startX + curveOffset} ${startY}, ${endX - curveOffset} ${endY}, ${endX} ${endY}`,
-        label: edge.label,
-        midX,
-        midY
-      }
-    ];
-  });
-}
-
-function scheduleFeatureFlowUpdate() {
-  void nextTick().then(() => {
-    updateFeatureEdgePaths();
-  });
-}
-
-function buildFallbackResponse(): GenerationResponse {
+function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse {
+  const project = currentProject.value ?? buildLocalProject(projectNameInput.value.trim() || "로컬 프로젝트");
   const normalized = prompt.value.trim();
   const title = normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
+  const now = new Date().toISOString();
+  const fallbackLogs: GenerationLogItem[] = [
+    {
+      sessionId: crypto.randomUUID(),
+      projectId: project.id,
+      projectName: project.name,
+      prompt: normalized,
+      createdAt: now,
+      targetArtifact,
+      summary: normalized
+    },
+    ...projectLogs.value
+  ].slice(0, 20);
 
   return {
-    sessionId: crypto.randomUUID(),
+    project: {
+      ...project,
+      updatedAt: now,
+      lastPrompt: normalized,
+      contextSummary: `${project.name} 프로젝트의 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`
+    },
+    sessionId: fallbackLogs[0].sessionId,
     artifacts: {
       prd: {
         ...fallbackArtifacts.prd,
-        title: `${title || "서비스"} PRD`,
-        generatedAt: new Date().toISOString()
+        title: `${title || project.name} PRD`,
+        generatedAt: now
       },
       featureSpec: {
         ...fallbackArtifacts.featureSpec,
-        title: `${title || "서비스"} 기능명세서`,
-        generatedAt: new Date().toISOString()
+        title: `${title || project.name} 기능명세서`,
+        generatedAt: now
       },
       policySpec: {
         ...fallbackArtifacts.policySpec,
-        title: `${title || "서비스"} 정책서`,
-        generatedAt: new Date().toISOString()
+        title: `${title || project.name} 정책서`,
+        generatedAt: now
       },
       userFlow: {
         ...fallbackArtifacts.userFlow,
-        title: `${title || "서비스"} 유저플로우`,
-        generatedAt: new Date().toISOString()
+        title: `${title || project.name} 유저플로우`,
+        generatedAt: now
       },
       flowChart: {
         ...fallbackArtifacts.flowChart,
-        title: `${title || "서비스"} 흐름도차트`,
-        generatedAt: new Date().toISOString()
+        title: `${title || project.name} 흐름도차트`,
+        generatedAt: now
       }
     },
-    suggestedActions: suggestedActions.value
+    suggestedActions: suggestedActions.value,
+    contextSummary: `${project.name} 프로젝트의 로컬 컨텍스트를 기반으로 결과를 생성했습니다.`,
+    logs: fallbackLogs,
+    versions: artifactVersions.value
   };
 }
 
-async function loadHistory() {
+function hydrateProjectDetail(detail: ProjectDetail | GenerationResponse) {
+  currentProject.value = detail.project;
+  projectNameInput.value = detail.project.name;
+  artifacts.value = detail.artifacts;
+  suggestedActions.value = detail.suggestedActions;
+  projectLogs.value = detail.logs;
+  artifactVersions.value = detail.versions;
+  contextSummary.value = detail.contextSummary;
+}
+
+async function loadProjects() {
   try {
-    history.value = await api.getHistory();
+    projectList.value = await api.getProjects();
+    if (!currentProject.value && projectList.value[0]) {
+      await selectProject(projectList.value[0].id);
+    }
   } catch {
-    history.value = [
-      {
-        id: "sample-1",
-        title: "AI 기획 보조 워크스페이스",
-        createdAt: new Date().toISOString(),
-        summary: "문서 생성, 히스토리, 다운로드 기능이 포함된 초안"
-      }
-    ];
+    if (currentProject.value) {
+      projectList.value = [currentProject.value];
+      return;
+    }
+
+    const localProject = buildLocalProject(projectNameInput.value.trim() || "로컬 프로젝트");
+    currentProject.value = localProject;
+    projectList.value = [localProject];
   }
 }
 
-async function generateArtifacts() {
+async function selectProject(projectId: string) {
+  errorMessage.value = "";
+
+  try {
+    const detail = await api.getProjectDetail(projectId);
+    hydrateProjectDetail(detail);
+  } catch {
+    const selected = projectList.value.find((project) => project.id === projectId);
+    if (selected) {
+      currentProject.value = selected;
+      projectNameInput.value = selected.name;
+    }
+    errorMessage.value = "프로젝트를 불러오지 못했습니다.";
+  }
+}
+
+async function createProject() {
+  const name = projectNameInput.value.trim();
+  if (!name) {
+    errorMessage.value = "프로젝트명을 입력해 주세요.";
+    return;
+  }
+
+  errorMessage.value = "";
+
+  try {
+    const project = await api.createProject({ name });
+    currentProject.value = project;
+    artifacts.value = fallbackArtifacts;
+    suggestedActions.value = [
+      "핵심 사용자를 3개로 나눠줘",
+      "운영 정책을 먼저 정의해줘",
+      "대규모 시스템 기준 제약조건을 추가해줘"
+    ];
+    projectLogs.value = [];
+    artifactVersions.value = createEmptyVersionMap();
+    contextSummary.value = `${project.name} 프로젝트를 생성했습니다. 이제 요청을 입력하면 누적 컨텍스트가 쌓입니다.`;
+    await loadProjects();
+  } catch {
+    const project = buildLocalProject(name);
+    currentProject.value = project;
+    projectList.value = [project, ...projectList.value.filter((item) => item.id !== project.id)];
+    projectLogs.value = [];
+    artifactVersions.value = createEmptyVersionMap();
+    contextSummary.value = `${project.name} 프로젝트를 로컬 상태로 생성했습니다.`;
+  }
+}
+
+async function generateArtifacts(targetArtifact?: ArtifactKey) {
   if (!prompt.value.trim()) {
     errorMessage.value = "아이디어를 한 줄 이상 입력해 주세요.";
+    return;
+  }
+
+  if (!currentProject.value) {
+    errorMessage.value = "먼저 프로젝트를 생성하거나 불러와 주세요.";
     return;
   }
 
@@ -630,19 +662,18 @@ async function generateArtifacts() {
 
   try {
     const response = await api.generate({
+      projectId: currentProject.value.id,
       prompt: prompt.value,
-      workspaceName: workspaceName.value
+      targetArtifact
     });
-    artifacts.value = response.artifacts;
-    suggestedActions.value = response.suggestedActions;
-    await loadHistory();
+    hydrateProjectDetail(response);
+    await loadProjects();
   } catch {
-    const fallback = buildFallbackResponse();
-    artifacts.value = fallback.artifacts;
-    suggestedActions.value = fallback.suggestedActions;
+    const fallback = buildFallbackResponse(targetArtifact);
+    hydrateProjectDetail(fallback);
+    await loadProjects();
   } finally {
     isGenerating.value = false;
-    scheduleFeatureFlowUpdate();
   }
 }
 
@@ -1126,7 +1157,8 @@ async function downloadHtmlArchive() {
   }
 
   const blob = await zip.generateAsync({ type: "blob" });
-  const sanitizedWorkspaceName = workspaceName.value.trim().replace(/[\\/:*?"<>|]+/g, "-") || "workspace";
+  const exportName = currentProject.value?.name ?? projectNameInput.value;
+  const sanitizedWorkspaceName = exportName.trim().replace(/[\\/:*?"<>|]+/g, "-") || "workspace";
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -1135,21 +1167,8 @@ async function downloadHtmlArchive() {
   URL.revokeObjectURL(url);
 }
 
-function handleResize() {
-  updateFeatureEdgePaths();
-}
-
-watch(featureFlowVisualization, scheduleFeatureFlowUpdate, { deep: true });
-watch(activeTab, scheduleFeatureFlowUpdate);
-
 onMounted(() => {
-  loadHistory();
-  window.addEventListener("resize", handleResize);
-  scheduleFeatureFlowUpdate();
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", handleResize);
+  void loadProjects();
 });
 </script>
 
@@ -1176,10 +1195,8 @@ onBeforeUnmount(() => {
       </nav>
 
       <div class="topbar__actions">
-        <button class="secondary-button" @click="downloadMarkdown">MD</button>
-        <button class="secondary-button" @click="downloadPdf">PDF</button>
-        <button class="secondary-button" @click="downloadImage">PNG</button>
-        <button class="secondary-button" @click="downloadHtmlArchive">HTML</button>
+        <button class="secondary-button" @click="createProject">+ 새 프로젝트</button>
+        <button class="secondary-button" @click="isHistoryOpen = !isHistoryOpen">기존 프로젝트 불러오기</button>
         <button class="avatar-group" @click="isHistoryOpen = !isHistoryOpen">
           <span />
           <span />
@@ -1188,25 +1205,42 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <div class="export-toolbar">
+      <div class="export-toolbar__inner">
+        <button class="secondary-button" @click="downloadMarkdown">MD</button>
+        <button class="secondary-button" @click="downloadPdf">PDF</button>
+        <button class="secondary-button" @click="downloadImage">PNG</button>
+        <button class="secondary-button" @click="downloadHtmlArchive">HTML</button>
+      </div>
+    </div>
+
     <main class="workspace">
       <aside class="chat-panel">
         <div class="chat-panel__card">
           <span class="label">프로젝트명</span>
-          <input v-model="workspaceName" class="text-input" />
+          <input v-model="projectNameInput" class="text-input" placeholder="새 프로젝트명을 입력하세요" />
+          <p class="project-caption">
+            {{ currentProject ? `현재 프로젝트: ${currentProject.name}` : "아직 선택된 프로젝트가 없습니다." }}
+          </p>
         </div>
 
         <div class="chat-panel__hint">
-          외부 고객은 아이디어 한 줄만 입력하고, 우측에서 PRD·기능명세서·정책서·유저플로우·흐름도차트를 바로 검토합니다.
+          프로젝트별로 PRD·기능명세서·정책서·유저플로우·흐름도차트를 누적 저장하고, 이후 요청으로 계속 개선할 수 있습니다.
         </div>
 
         <section class="chat-panel__card">
           <h2>요청 입력</h2>
-          <p>업무 목적, 대상 고객, 제약조건을 포함하면 더 정교한 결과를 생성합니다.</p>
+          <p>업무 목적, 대상 고객, 제약조건을 포함하면 더 정교한 결과를 생성합니다. 생성 시 이전 프로젝트 문서와 로그가 함께 반영됩니다.</p>
           <textarea v-model="prompt" class="prompt-input" />
-          <button class="primary-button" :disabled="isGenerating" @click="generateArtifacts">
+          <button class="primary-button" :disabled="isGenerating" @click="() => generateArtifacts()">
             {{ isGenerating ? "생성 중..." : "문서 생성" }}
           </button>
           <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+        </section>
+
+        <section class="chat-panel__card">
+          <h3>누적 컨텍스트</h3>
+          <p>{{ contextSummary }}</p>
         </section>
 
         <section class="chat-panel__card">
@@ -1224,10 +1258,16 @@ onBeforeUnmount(() => {
           <div>
             <span class="label">현재 산출물</span>
             <h1>{{ currentDocument.title }}</h1>
+            <p class="board-toolbar__project">
+              {{ currentProject ? `${currentProject.name} 프로젝트` : "프로젝트를 먼저 선택해 주세요." }}
+            </p>
           </div>
           <div class="board-meta">
             <span>{{ currentDocument.version }}</span>
             <span>{{ new Date(currentDocument.generatedAt).toLocaleString("ko-KR") }}</span>
+            <button class="secondary-button" :disabled="isGenerating" @click="() => generateArtifacts(activeTab)">
+              {{ isGenerating ? "재생성 중..." : "현재 문서부터 재생성" }}
+            </button>
           </div>
         </div>
 
@@ -1258,40 +1298,7 @@ onBeforeUnmount(() => {
               <p>기능명세서 하단에 좌측에서 우측으로 확장되는 구조형 그래프를 함께 제공합니다.</p>
             </div>
 
-            <div ref="featureFlowHostRef" class="feature-flow">
-              <svg class="feature-flow__svg" aria-hidden="true">
-                <g v-for="edge in featureEdgePaths" :key="edge.id">
-                  <path :d="edge.d" class="feature-flow__path" />
-                  <text
-                    v-if="edge.label"
-                    :x="edge.midX"
-                    :y="edge.midY - 6"
-                    class="feature-flow__label"
-                  >
-                    {{ edge.label }}
-                  </text>
-                </g>
-              </svg>
-
-              <div class="feature-flow__columns">
-                <div
-                  v-for="column in featureFlowColumns"
-                  :key="column.column"
-                  class="feature-flow__column"
-                >
-                  <span class="feature-flow__column-title">STEP {{ column.column + 1 }}</span>
-                  <div
-                    v-for="node in column.nodes"
-                    :key="node.id"
-                    :ref="setFeatureNodeRef(node.id)"
-                    :class="['flow-node', `flow-node--${node.accent ?? 'neutral'}`]"
-                  >
-                    <strong>{{ node.label }}</strong>
-                    <p>{{ node.description }}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <FeatureFlowBoard :visualization="featureFlowVisualization" />
           </section>
 
           <section v-if="policyTableVisualization" class="visual-section">
@@ -1341,7 +1348,7 @@ onBeforeUnmount(() => {
               <p>유저플로우 하단에 IA 스타일의 메뉴 구조 보드를 함께 생성합니다.</p>
             </div>
 
-            <TreeMap :visualization="userFlowVisualization" />
+            <UserFlowBoard :visualization="userFlowVisualization" />
           </section>
 
           <section v-if="flowChartVisualization" class="visual-section">
@@ -1361,16 +1368,51 @@ onBeforeUnmount(() => {
       <aside :class="['history-panel', { 'history-panel--open': isHistoryOpen }]">
         <div class="history-panel__header">
           <div>
-            <span class="label">생성 히스토리</span>
-            <h3>최근 생성 결과</h3>
+            <span class="label">프로젝트 로그</span>
+            <h3>기존 프로젝트 불러오기</h3>
           </div>
           <button class="secondary-button" @click="isHistoryOpen = false">닫기</button>
         </div>
         <div class="history-list">
-          <article v-for="item in history" :key="item.id" class="history-card">
-            <strong>{{ item.title }}</strong>
-            <span>{{ new Date(item.createdAt).toLocaleDateString("ko-KR") }}</span>
-            <p>{{ item.summary }}</p>
+          <article
+            v-for="project in projectList"
+            :key="project.id"
+            :class="['history-card', { 'history-card--active': currentProject?.id === project.id }]"
+            @click="selectProject(project.id)"
+          >
+            <strong>{{ project.name }}</strong>
+            <span>{{ new Date(project.updatedAt).toLocaleDateString("ko-KR") }}</span>
+            <p>{{ project.contextSummary ?? project.lastPrompt ?? "아직 생성 이력이 없습니다." }}</p>
+          </article>
+        </div>
+        <div class="history-panel__header history-panel__header--nested">
+          <div>
+            <span class="label">최근 생성 로그</span>
+            <h3>{{ currentProject?.name ?? "선택된 프로젝트 없음" }}</h3>
+          </div>
+        </div>
+        <div class="history-list">
+          <article v-for="log in projectLogs" :key="log.sessionId" class="history-card">
+            <strong>{{ log.targetArtifact ? `${log.targetArtifact}부터 재생성` : "전체 문서 생성" }}</strong>
+            <span>{{ new Date(log.createdAt).toLocaleString("ko-KR") }}</span>
+            <p>{{ log.summary }}</p>
+          </article>
+        </div>
+        <div class="history-panel__header history-panel__header--nested">
+          <div>
+            <span class="label">현재 탭 버전</span>
+            <h3>{{ tabItems.find((item) => item.key === activeTab)?.label }}</h3>
+          </div>
+        </div>
+        <div class="history-list">
+          <article
+            v-for="version in artifactVersions[activeTab]"
+            :key="version.id"
+            class="history-card"
+          >
+            <strong>{{ version.version }}</strong>
+            <span>{{ new Date(version.generatedAt).toLocaleString("ko-KR") }}</span>
+            <p>{{ version.title }}</p>
           </article>
         </div>
       </aside>
@@ -1452,6 +1494,20 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.export-toolbar {
+  margin-top: 12px;
+  padding: 10px 16px;
+  border: 1px solid rgba(194, 214, 190, 0.7);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.export-toolbar__inner {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr) 0;
@@ -1503,6 +1559,14 @@ onBeforeUnmount(() => {
   padding: 18px;
   color: #5c665f;
   font-size: 14px;
+}
+
+.project-caption,
+.board-toolbar__project {
+  margin: 10px 0 0;
+  color: #5c665f;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .label {
@@ -1607,6 +1671,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   padding: 8px 12px;
   background: #ffffff;
+  font-size:12px;
 }
 
 .error-text {
@@ -1625,7 +1690,7 @@ onBeforeUnmount(() => {
 .board-toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: end;
+  align-items: center;
   margin-bottom: 20px;
 }
 
@@ -1639,6 +1704,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   color: #777777;
   font-size: 13px;
+  align-items: center;
 }
 
 .document-board {
@@ -1748,14 +1814,14 @@ onBeforeUnmount(() => {
   gap: 22px;
 }
 
-.feature-flow__column::before {
+/* .feature-flow__column::before {
   content: "";
   position: absolute;
   top: 26px;
   bottom: 8px;
   left: 14px;
   border-left: 1px dashed rgba(0, 105, 77, 0.18);
-}
+} */
 
 .feature-flow__column-title {
   position: relative;
@@ -1862,6 +1928,10 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 
+.history-panel__header--nested {
+  margin-top: 18px;
+}
+
 .history-panel__header h3 {
   margin: 4px 0 0;
 }
@@ -1874,6 +1944,7 @@ onBeforeUnmount(() => {
 
 .history-card {
   padding: 16px;
+  cursor: pointer;
 }
 
 .history-card span {
@@ -1887,6 +1958,11 @@ onBeforeUnmount(() => {
   margin: 0;
   color: #777777;
   font-size: 14px;
+}
+
+.history-card--active {
+  border-color: rgba(0, 105, 77, 0.3);
+  background: rgba(0, 105, 77, 0.05);
 }
 
 @media (max-width: 1280px) {

@@ -1,4 +1,5 @@
 export type ArtifactKind = "prd" | "feature-spec" | "policy-spec" | "user-flow" | "flow-chart";
+export type ArtifactKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
 
 export interface ArtifactSection {
   title: string;
@@ -108,20 +109,64 @@ export interface WorkspaceArtifactSet {
   flowChart: ArtifactDocument;
 }
 
+export interface CreateProjectRequest {
+  name: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  contextSummary?: string;
+  latestSessionId?: string;
+  lastPrompt?: string;
+}
+
+export interface ArtifactVersionSummary {
+  id: string;
+  kind: ArtifactKind;
+  title: string;
+  version: string;
+  generatedAt: string;
+  sessionId: string;
+  parentDocumentId?: string | null;
+}
+
+export interface GenerationLogItem {
+  sessionId: string;
+  projectId: string;
+  projectName: string;
+  prompt: string;
+  createdAt: string;
+  targetArtifact?: ArtifactKey;
+  summary: string;
+}
+
+export interface ProjectDetail {
+  project: ProjectSummary;
+  artifacts: WorkspaceArtifactSet;
+  suggestedActions: string[];
+  contextSummary: string;
+  logs: GenerationLogItem[];
+  versions: Record<ArtifactKey, ArtifactVersionSummary[]>;
+}
+
 export interface GenerationRequest {
   prompt: string;
-  workspaceName: string;
+  projectId?: string;
+  workspaceName?: string;
+  targetArtifact?: ArtifactKey;
 }
 
 export interface GenerationResponse {
+  project: ProjectSummary;
   sessionId: string;
   artifacts: WorkspaceArtifactSet;
   suggestedActions: string[];
+  contextSummary: string;
+  logs: GenerationLogItem[];
+  versions: Record<ArtifactKey, ArtifactVersionSummary[]>;
 }
 
-export interface HistoryItem {
-  id: string;
-  title: string;
-  createdAt: string;
-  summary: string;
-}
+export interface HistoryItem extends GenerationLogItem {}

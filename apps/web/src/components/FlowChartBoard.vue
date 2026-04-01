@@ -1,55 +1,105 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { ComponentPublicInstance } from "vue";
+import { computed, markRaw } from "vue";
+import { MarkerType, VueFlow, type Edge, type Node } from "@vue-flow/core";
 import type { FlowChartVisualization } from "@mottor-plan/shared";
-
-type FlowEdgePathTone = "positive" | "negative" | "neutral";
-
-type FlowEdgePath = {
-  id: string;
-  d: string;
-  label?: string;
-  labelX: number;
-  labelY: number;
-  tone: FlowEdgePathTone;
-};
+import FlowChartNode from "./FlowChartNode.vue";
+import "@vue-flow/core/dist/style.css";
+import "@vue-flow/core/dist/theme-default.css";
 
 const props = defineProps<{
   visualization: FlowChartVisualization;
 }>();
 
-const contentRef = ref<HTMLElement | null>(null);
-const edgePaths = ref<FlowEdgePath[]>([]);
-const svgWidth = ref(0);
-const svgHeight = ref(0);
-const nodeElements = new Map<string, HTMLElement>();
-let resizeObserver: ResizeObserver | null = null;
+const nodeTypes = {
+  flowChartNode: markRaw(FlowChartNode)
+} as Record<string, any>;
 
-const columnCount = computed(() => {
-  const maxColumn = props.visualization.nodes.reduce((acc, node) => Math.max(acc, node.column), 0);
-  return maxColumn + 1;
-});
+const graphState = computed(() => buildGraphState(props.visualization));
+const flowNodes = computed(() => graphState.value.nodes);
+const flowEdges = computed(() => graphState.value.edges);
+const boardStyle = computed(() => ({
+  width: `${graphState.value.width}px`,
+  height: `${graphState.value.height}px`
+}));
 
-const rowCount = computed(() => {
-  const maxRow = props.visualization.nodes.reduce((acc, node) => Math.max(acc, node.row), 0);
-  return maxRow + 1;
-});
+function buildGraphState(visualization: FlowChartVisualization) {
+  const columnGap = 300;
+  const rowGap = 180;
+  const nodeWidth = 220;
+  const nodeHeight = 132;
 
-function getBoardStyle() {
+  const lookup = new Map(visualization.nodes.map((node) => [node.id, node]));
+
+  const nodes: Node[] = visualization.nodes.map((node) => ({
+    id: node.id,
+    type: "flowChartNode",
+    position: {
+      x: node.column * columnGap + 40,
+      y: node.row * rowGap + 30
+    },
+    data: {
+      label: node.label,
+      description: node.description,
+      shape: node.shape,
+      accent: node.accent
+    },
+    draggable: false,
+    selectable: false,
+    connectable: false
+  }));
+
+  const edges: Edge[] = visualization.edges.map((edge) => {
+    const fromNode = lookup.get(edge.from);
+    const toNode = lookup.get(edge.to);
+    const tone = getEdgeTone(edge.label);
+    const sourceHandle = resolveSourceHandle(fromNode, toNode);
+    const targetHandle = resolveTargetHandle(fromNode, toNode);
+    const stroke = tone === "positive" ? "#4e63ff" : tone === "negative" ? "#fb4f4f" : "#aab5bf";
+
+    return {
+      id: `${edge.from}-${edge.to}`,
+      source: edge.from,
+      target: edge.to,
+      sourceHandle,
+      targetHandle,
+      type: "smoothstep",
+      label: edge.label,
+      labelStyle: {
+        fill: stroke,
+        fontSize: "11px",
+        fontWeight: 800
+      },
+      labelShowBg: true,
+      labelBgPadding: [6, 4],
+      labelBgBorderRadius: 999,
+      labelBgStyle: {
+        fill: "rgba(255, 255, 255, 0.96)"
+      },
+      style: {
+        stroke,
+        strokeWidth: 2.2
+      },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: stroke,
+        width: 18,
+        height: 18
+      }
+    };
+  });
+
+  const maxColumn = Math.max(...visualization.nodes.map((node) => node.column), 0);
+  const maxRow = Math.max(...visualization.nodes.map((node) => node.row), 0);
+
   return {
-    gridTemplateColumns: `repeat(${columnCount.value}, minmax(220px, 260px))`,
-    gridTemplateRows: `repeat(${rowCount.value}, minmax(140px, auto))`
+    nodes,
+    edges,
+    width: (maxColumn + 1) * columnGap + nodeWidth,
+    height: (maxRow + 1) * rowGap + nodeHeight
   };
 }
 
-function getNodeStyle(column: number, row: number) {
-  return {
-    gridColumn: `${column + 1}`,
-    gridRow: `${row + 1}`
-  };
-}
-
-function getEdgeTone(label?: string): FlowEdgePathTone {
+function getEdgeTone(label?: string) {
   const normalized = label?.trim().toLowerCase() ?? "";
   if (normalized.includes("yes") || normalized.includes("승인") || normalized.includes("완료") || normalized.includes("적합")) {
     return "positive";
@@ -62,195 +112,54 @@ function getEdgeTone(label?: string): FlowEdgePathTone {
   return "neutral";
 }
 
-function setNodeRef(nodeId: string) {
-  return (element: Element | ComponentPublicInstance | null) => {
-    if (element instanceof HTMLElement) {
-      nodeElements.set(nodeId, element);
-      return;
-    }
-
-    nodeElements.delete(nodeId);
-  };
-}
-
-function updateEdgePaths() {
-  const content = contentRef.value;
-  if (!content) {
-    edgePaths.value = [];
-    return;
+function resolveSourceHandle(
+  fromNode: FlowChartVisualization["nodes"][number] | undefined,
+  toNode: FlowChartVisualization["nodes"][number] | undefined
+) {
+  if (!fromNode || !toNode) {
+    return "bottom-source";
   }
 
-  svgWidth.value = Math.ceil(content.scrollWidth);
-  svgHeight.value = Math.ceil(content.scrollHeight);
-  const contentRect = content.getBoundingClientRect();
-  const edgeLookup = new Set(props.visualization.edges.map((edge) => `${edge.from}::${edge.to}`));
-
-  edgePaths.value = props.visualization.edges.flatMap((edge) => {
-    const fromElement = nodeElements.get(edge.from);
-    const toElement = nodeElements.get(edge.to);
-
-    if (!fromElement || !toElement) {
-      return [];
-    }
-
-    const fromRect = fromElement.getBoundingClientRect();
-    const toRect = toElement.getBoundingClientRect();
-    const fromCenterX = fromRect.left - contentRect.left + fromRect.width / 2;
-    const fromCenterY = fromRect.top - contentRect.top + fromRect.height / 2;
-    const toCenterX = toRect.left - contentRect.left + toRect.width / 2;
-    const toCenterY = toRect.top - contentRect.top + toRect.height / 2;
-    const deltaX = toCenterX - fromCenterX;
-    const deltaY = toCenterY - fromCenterY;
-    const tone = getEdgeTone(edge.label);
-    const hasReverseEdge = edgeLookup.has(`${edge.to}::${edge.from}`);
-
-    if (Math.abs(deltaY) >= Math.abs(deltaX)) {
-      const moveDown = deltaY >= 0;
-      const startX = fromCenterX;
-      const startY = moveDown ? fromRect.bottom - contentRect.top : fromRect.top - contentRect.top;
-      const endX = toCenterX;
-      const endY = moveDown ? toRect.top - contentRect.top : toRect.bottom - contentRect.top;
-      const midY = startY + (endY - startY) / 2;
-
-      return [
-        {
-          id: `${edge.from}-${edge.to}`,
-          d: `M ${startX} ${startY} V ${midY} H ${endX} V ${endY}`,
-          label: edge.label,
-          labelX: startX === endX ? startX + 12 : startX + (endX - startX) / 2,
-          labelY: midY - 8,
-          tone
-        }
-      ];
-    }
-
-    const moveRight = deltaX >= 0;
-    const startX = moveRight ? fromRect.right - contentRect.left : fromRect.left - contentRect.left;
-    const startY = fromCenterY;
-    const endX = moveRight ? toRect.left - contentRect.left : toRect.right - contentRect.left;
-    const endY = toCenterY;
-    const midX = startX + (endX - startX) / 2;
-    const isSameLane = Math.abs(endY - startY) < 6;
-
-    if (hasReverseEdge && isSameLane) {
-      const detourY = startY + (moveRight ? -26 : 26);
-
-      return [
-        {
-          id: `${edge.from}-${edge.to}`,
-          d: `M ${startX} ${startY} V ${detourY} H ${endX} V ${endY}`,
-          label: edge.label,
-          labelX: startX + (endX - startX) / 2,
-          labelY: detourY + (moveRight ? -8 : 18),
-          tone
-        }
-      ];
-    }
-
-    return [
-      {
-        id: `${edge.from}-${edge.to}`,
-        d: `M ${startX} ${startY} H ${midX} V ${endY} H ${endX}`,
-        label: edge.label,
-        labelX: midX + 8,
-        labelY: startY === endY ? startY - 10 : startY + (endY - startY) / 2 - 8,
-        tone
-      }
-    ];
-  });
-}
-
-function scheduleUpdate() {
-  void nextTick().then(() => {
-    updateEdgePaths();
-  });
-}
-
-function handleResize() {
-  updateEdgePaths();
-}
-
-watch(
-  () => props.visualization,
-  () => {
-    scheduleUpdate();
-  },
-  { deep: true }
-);
-
-onMounted(() => {
-  window.addEventListener("resize", handleResize);
-  if (typeof ResizeObserver !== "undefined" && contentRef.value) {
-    resizeObserver = new ResizeObserver(() => {
-      updateEdgePaths();
-    });
-    resizeObserver.observe(contentRef.value);
+  if (fromNode.row === toNode.row) {
+    return toNode.column >= fromNode.column ? "right-source" : "left-source";
   }
-  scheduleUpdate();
-});
 
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", handleResize);
-  resizeObserver?.disconnect();
-  resizeObserver = null;
-});
+  return toNode.row > fromNode.row ? "bottom-source" : "top-source";
+}
+
+function resolveTargetHandle(
+  fromNode: FlowChartVisualization["nodes"][number] | undefined,
+  toNode: FlowChartVisualization["nodes"][number] | undefined
+) {
+  if (!fromNode || !toNode) {
+    return "top-target";
+  }
+
+  if (fromNode.row === toNode.row) {
+    return toNode.column >= fromNode.column ? "left-target" : "right-target";
+  }
+
+  return toNode.row > fromNode.row ? "top-target" : "bottom-target";
+}
 </script>
 
 <template>
   <div class="flow-chart-board">
-    <div ref="contentRef" class="flow-chart-board__content">
-      <svg
-        class="flow-chart-board__svg"
-        :width="svgWidth"
-        :height="svgHeight"
-        :viewBox="`0 0 ${svgWidth || 1} ${svgHeight || 1}`"
-        aria-hidden="true"
-      >
-        <defs>
-          <marker
-            id="flow-chart-arrow"
-            markerWidth="10"
-            markerHeight="10"
-            refX="8"
-            refY="5"
-            orient="auto"
-            markerUnits="strokeWidth"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#aab5bf" />
-          </marker>
-        </defs>
-
-        <g v-for="edge in edgePaths" :key="edge.id">
-          <path :d="edge.d" class="flow-chart-board__path" />
-          <text
-            v-if="edge.label"
-            :x="edge.labelX"
-            :y="edge.labelY"
-            :class="['flow-chart-board__label', `flow-chart-board__label--${edge.tone}`]"
-          >
-            {{ edge.label }}
-          </text>
-        </g>
-      </svg>
-
-      <div class="flow-chart-board__canvas" :style="getBoardStyle()">
-        <div
-          v-for="node in visualization.nodes"
-          :key="node.id"
-          :ref="setNodeRef(node.id)"
-          :style="getNodeStyle(node.column, node.row)"
-          :class="[
-            'flow-chart-node',
-            `flow-chart-node--${node.shape}`,
-            `flow-chart-node--${node.accent ?? 'neutral'}`
-          ]"
-        >
-          <div class="flow-chart-node__content">
-            <strong>{{ node.label }}</strong>
-            <p v-if="node.description">{{ node.description }}</p>
-          </div>
-        </div>
-      </div>
+    <div class="flow-chart-board__canvas" :style="boardStyle">
+      <VueFlow
+        :nodes="flowNodes"
+        :edges="flowEdges"
+        :node-types="nodeTypes"
+        :nodes-draggable="false"
+        :elements-selectable="false"
+        :nodes-connectable="false"
+        :zoom-on-scroll="false"
+        :pan-on-scroll="false"
+        :pan-on-drag="false"
+        :prevent-scrolling="false"
+        :fit-view-on-init="false"
+        class="flow-chart-board__flow"
+      />
     </div>
   </div>
 </template>
@@ -262,228 +171,37 @@ onBeforeUnmount(() => {
   padding: 12px 8px 28px;
 }
 
-.flow-chart-board__content {
-  position: relative;
-  width: max-content;
-  min-width: 100%;
-}
-
-.flow-chart-board__svg {
-  position: absolute;
-  inset: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.flow-chart-board__path {
-  fill: none;
-  stroke: #b8c0c8;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  marker-end: url(#flow-chart-arrow);
-}
-
-.flow-chart-board__label {
-  fill: #727b83;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.flow-chart-board__label--positive {
-  fill: #4e63ff;
-}
-
-.flow-chart-board__label--negative {
-  fill: #fb4f4f;
-}
-
 .flow-chart-board__canvas {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  column-gap: 72px;
-  row-gap: 28px;
-  width: max-content;
   min-width: 100%;
-  padding: 10px 18px 34px;
-  align-items: center;
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(0, 105, 77, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 105, 77, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-color: #fcfdfc;
 }
 
-.flow-chart-node {
-  position: relative;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 120px;
-  justify-self: center;
+.flow-chart-board__flow {
+  width: 100%;
+  height: 100%;
 }
 
-.flow-chart-node__content {
-  position: relative;
-  z-index: 1;
-  width: 220px;
-  min-height: 84px;
-  padding: 18px 18px;
-  background: #ffffff;
-  text-align: center;
-  box-shadow: 0 10px 24px rgba(12, 58, 39, 0.05);
+:deep(.flow-chart-board__flow .vue-flow__pane) {
+  cursor: default;
 }
 
-.flow-chart-node__content strong {
-  display: block;
-  font-size: 14px;
-  line-height: 1.45;
-  color: #2d3b34;
+:deep(.flow-chart-board__flow .vue-flow__viewport) {
+  transform: translate(0px, 0px) scale(1) !important;
 }
 
-.flow-chart-node__content p {
-  margin: 8px 0 0;
-  color: #66756b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.flow-chart-node--document,
-.flow-chart-node--decision {
-  isolation: isolate;
-}
-
-.flow-chart-node--process .flow-chart-node__content {
-  border: 1.5px solid #cfd6dc;
-  border-radius: 6px;
-}
-
-.flow-chart-node--terminator .flow-chart-node__content {
-  border: 1.5px solid #cfd6dc;
-  border-radius: 999px;
-}
-
-.flow-chart-node--document::before,
-.flow-chart-node--decision::before,
-.flow-chart-node--decision::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  pointer-events: none;
-}
-
-.flow-chart-node--document::before {
-  display: none;
-}
-
-.flow-chart-node--document .flow-chart-node__content {
-  width: 210px;
-  min-height: 78px;
-  padding: 18px 20px;
+:deep(.flow-chart-board__flow .vue-flow__node) {
+  border: 0;
   background: transparent;
   box-shadow: none;
-  overflow: visible;
+  padding: 0;
 }
 
-.flow-chart-node--document .flow-chart-node__content::before,
-.flow-chart-node--document .flow-chart-node__content::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  transform: skewX(-12deg);
-  transform-origin: center;
-  pointer-events: none;
-}
-
-.flow-chart-node--document .flow-chart-node__content::before {
-  inset: -2px;
-  background: var(--flow-node-border, #cfd6dc);
-  box-shadow: 0 10px 24px rgba(12, 58, 39, 0.05);
-  z-index: -2;
-}
-
-.flow-chart-node--document .flow-chart-node__content::after {
-  background: #ffffff;
-  z-index: -1;
-}
-
-.flow-chart-node--subprocess .flow-chart-node__content {
-  border: 1.5px solid #cfd6dc;
-  border-radius: 6px;
-  box-shadow:
-    inset 9px 0 0 rgba(154, 171, 185, 0.18),
-    inset -9px 0 0 rgba(154, 171, 185, 0.18),
-    0 10px 24px rgba(12, 58, 39, 0.05);
-}
-
-.flow-chart-node--decision::before {
-  width: 220px;
-  height: 132px;
-  background: var(--flow-node-border, #cfd6dc);
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-  box-shadow: 0 10px 24px rgba(12, 58, 39, 0.05);
-}
-
-.flow-chart-node--decision::after {
-  width: 215px;
-  height: 129px;
-  background: #ffffff;
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-}
-
-.flow-chart-node--decision .flow-chart-node__content {
-  width: 220px;
-  min-height: 118px;
-  padding: 24px 22px;
-  background: transparent;
-  box-shadow: none;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.flow-chart-node--decision .flow-chart-node__content strong {
-  line-height: 1.35;
-}
-
-.flow-chart-node--primary .flow-chart-node__content {
-  border-color: rgba(0, 105, 77, 0.34);
-}
-
-.flow-chart-node--secondary .flow-chart-node__content {
-  border-color: rgba(120, 192, 70, 0.55);
-}
-
-.flow-chart-node--neutral .flow-chart-node__content {
-  border-color: #cfd6dc;
-}
-
-.flow-chart-node--primary {
-  --flow-node-border: rgba(0, 105, 77, 0.34);
-}
-
-.flow-chart-node--secondary {
-  --flow-node-border: rgba(120, 192, 70, 0.55);
-}
-
-.flow-chart-node--neutral {
-  --flow-node-border: #cfd6dc;
-}
-
-:global(.document-board--image-export) .flow-chart-board__path {
+:global(.document-board--image-export) .flow-chart-board__canvas .vue-flow__edge-path {
   marker-end: none;
-}
-
-:global(.document-board--image-export) .flow-chart-board__svg defs {
-  display: none;
-}
-
-:global(.document-board--image-export) .flow-chart-node__content,
-:global(.document-board--image-export) .flow-chart-node--document .flow-chart-node__content::before,
-:global(.document-board--image-export) .flow-chart-node--decision::before {
-  box-shadow: none;
-}
-
-@media (max-width: 1200px) {
-  .flow-chart-board__canvas {
-    min-width: max-content;
-  }
 }
 </style>

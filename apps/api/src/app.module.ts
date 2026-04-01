@@ -6,6 +6,8 @@ import { HistoryController } from "./modules/history/history.controller";
 import { HistoryService } from "./modules/history/history.service";
 import { LlmService } from "./modules/llm/llm.service";
 import { PrismaService } from "./modules/persistence/prisma.service";
+import { ProjectsController } from "./modules/projects/projects.controller";
+import { ProjectsService } from "./modules/projects/projects.service";
 
 @Module({
   imports: [
@@ -14,7 +16,7 @@ import { PrismaService } from "./modules/persistence/prisma.service";
       envFilePath: [".env.local", ".env"]
     })
   ],
-  controllers: [GenerationController, HistoryController],
-  providers: [PrismaService, HistoryService, LlmService, GenerationService]
+  controllers: [GenerationController, HistoryController, ProjectsController],
+  providers: [PrismaService, ProjectsService, HistoryService, LlmService, GenerationService]
 })
 export class AppModule {}

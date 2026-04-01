@@ -2,134 +2,462 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type {
   ArtifactDocument,
+  ArtifactKey,
   ArtifactSection,
   FeatureFlowVisualization,
   FlowChartVisualization,
+  GenerationLogItem,
   PolicyTableVisualization,
   TreeMapVisualization,
   WorkspaceArtifactSet
 } from "@mottor-plan/shared";
 
-interface LlmOutput {
+type StageOutput = {
+  document: ArtifactDocument;
+};
+
+type GenerationPipelineInput = {
+  projectName: string;
+  prompt: string;
+  targetArtifact?: ArtifactKey;
+  currentArtifacts: WorkspaceArtifactSet;
+  recentLogs: GenerationLogItem[];
+  contextSummary: string;
+};
+
+type GenerationPipelineOutput = {
   artifacts: WorkspaceArtifactSet;
   suggestedActions: string[];
-}
+  contextSummary: string;
+  qualityChecklists: Record<ArtifactKey, string[]>;
+};
+
+const artifactOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart"];
 
 @Injectable()
 export class LlmService {
   constructor(private readonly configService: ConfigService) {}
 
-  async generateArtifacts(workspaceName: string, prompt: string): Promise<LlmOutput> {
+  async generateProjectArtifacts(input: GenerationPipelineInput): Promise<GenerationPipelineOutput> {
+    const workingArtifacts: WorkspaceArtifactSet = { ...input.currentArtifacts };
+    const generatedAt = new Date().toISOString();
+    const startIndex = this.resolveStartIndex(input.targetArtifact, input.currentArtifacts);
+
+    for (let index = 0; index < artifactOrder.length; index += 1) {
+      const artifactKey = artifactOrder[index];
+      const shouldRegenerate = index >= startIndex;
+
+      if (!shouldRegenerate && this.isGeneratedDocument(workingArtifacts[artifactKey])) {
+        continue;
+      }
+
+      const generatedDocument = await this.generateArtifactStage({
+        artifactKey,
+        generatedAt,
+        projectName: input.projectName,
+        prompt: input.prompt,
+        contextSummary: input.contextSummary,
+        recentLogs: input.recentLogs,
+        currentArtifacts: workingArtifacts
+      });
+
+      workingArtifacts[artifactKey] = generatedDocument;
+    }
+
+    const qualityChecklists = this.buildQualityChecklistMap(workingArtifacts);
+
+    return {
+      artifacts: workingArtifacts,
+      suggestedActions: this.buildSuggestedActions(workingArtifacts, input.prompt),
+      contextSummary: this.buildContextSummary(input.projectName, input.prompt, workingArtifacts),
+      qualityChecklists
+    };
+  }
+
+  private async generateArtifactStage(input: {
+    artifactKey: ArtifactKey;
+    generatedAt: string;
+    projectName: string;
+    prompt: string;
+    contextSummary: string;
+    recentLogs: GenerationLogItem[];
+    currentArtifacts: WorkspaceArtifactSet;
+  }): Promise<ArtifactDocument> {
+    const response = await this.requestStageOutput(input);
+
+    if (response?.document) {
+      return {
+        ...response.document,
+        generatedAt: input.generatedAt,
+        version: "draft"
+      };
+    }
+
+    return this.buildTemplateDocument(input.artifactKey, input.projectName, input.prompt, input.generatedAt, input.currentArtifacts);
+  }
+
+  private async requestStageOutput(input: {
+    artifactKey: ArtifactKey;
+    generatedAt: string;
+    projectName: string;
+    prompt: string;
+    contextSummary: string;
+    recentLogs: GenerationLogItem[];
+    currentArtifacts: WorkspaceArtifactSet;
+  }): Promise<StageOutput | null> {
     const apiKey = this.configService.get<string>("LLM_API_KEY");
     const baseUrl = this.configService.get<string>("LLM_BASE_URL");
     const model = this.configService.get<string>("LLM_MODEL") ?? "gpt-4.1-mini";
 
-    if (apiKey && baseUrl) {
-      try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0.5,
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content:
-                  "너는 B2B SaaS 제품기획 전문가다. 입력 아이디어를 바탕으로 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 한국어 JSON으로 생성한다. 기능명세서에는 좌측에서 우측으로 확장되는 기능 플로우 그래프를, 정책서에는 동적 컬럼 테이블을, 유저플로우에는 left-to-right tree 기반 메뉴 구조도를, 흐름도차트에는 상단에서 하단으로 흐르는 수직형 flow chart를 반드시 포함한다."
-              },
-              {
-                role: "user",
-                content: [
-                  "다음 형식으로만 응답해.",
-                  '{ "artifacts": { "prd": {...}, "featureSpec": {...}, "policySpec": {...}, "userFlow": {...}, "flowChart": {...} }, "suggestedActions": ["", "", ""] }',
-                  '각 문서는 title, version, generatedAt, sections, visualization을 포함한다.',
-                  'sections는 [{ "title": "", "summary": "", "bullets": ["", ""] }] 구조다.',
-                  'featureSpec.visualization은 반드시 { "type": "feature-flow", "rootNodeId": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
-                  'policySpec.visualization은 반드시 { "type": "policy-table", "title": "", "columns": [{ "key": "", "label": "" }], "rows": [{ "id": "", "values": { "columnKey": "cellValue" } }] } 구조를 따른다.',
-                  'userFlow.visualization은 반드시 { "type": "tree-map", "title": "", "root": { "id": "", "label": "", "description": "", "accent": "primary|secondary|neutral", "children": [] } } 구조를 따른다.',
-                  'flowChart.visualization은 반드시 { "type": "flow-chart", "title": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "row": 0, "shape": "terminator|process|decision|document|subprocess", "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
-                  "featureSpec 그래프는 필요한 만큼 column과 node를 사용해 좌->우 흐름이 보이도록 만든다.",
-                  "policySpec 테이블은 요구사항에 맞춰 열 개수와 열 이름을 유연하게 생성한다. 예: 정책코드, 정책명, 사용자, 보기, 수정, 삭제, 조건, 비고 등.",
-                  "policySpec 각 row는 columns의 key를 기준으로 모든 셀 값을 values 객체에 채운다.",
-                  "userFlow tree는 depth 제한 없이 children을 중첩할 수 있어야 하며, 같은 depth에 여러 형제 노드가 있을 수 있다.",
-                  "메뉴 구조도는 root에서 시작해 좌우로 뻗고, 동일 레벨 항목은 아래로 쌓이는 형태로 설계한다.",
-                  "flowChart는 유저플로우와 다르게 실제 업무 흐름도를 표현해야 하며, 조건 분기에는 decision shape를 사용한다.",
-                  "flowChart는 기본적으로 위에서 아래로 진행되는 수직 흐름이어야 하며, row는 상단에서 하단으로 이어지는 단계 순서를 의미한다.",
-                  "flowChart의 column은 메인 수직 축에서 좌우로 분기되는 보조 레인을 의미한다. 메인 흐름은 가능하면 같은 column에 세로로 배치한다.",
-                  "document shape는 안내/입력/출력 단계처럼 보조 화면이나 입출력 단계에 사용한다.",
-                  `워크스페이스명: ${workspaceName}`,
-                  `사용자 요청: ${prompt}`
-                ].join("\n")
-              }
-            ]
-          })
-        });
+    if (!apiKey || !baseUrl) {
+      return null;
+    }
 
-        if (response.ok) {
-          const payload = (await response.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          const content = payload.choices?.[0]?.message?.content;
-          if (content) {
-            const parsed = JSON.parse(content) as LlmOutput;
-            return parsed;
-          }
-        }
-      } catch {
-        // 외부 LLM 실패 시 템플릿 결과로 폴백합니다.
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.35,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content:
+                "너는 대규모 B2B SaaS를 다루는 시니어 제품기획 리드다. 반드시 한국어 JSON만 응답한다. 문서는 실무 구현 가능성, 권한/예외 흐름, 운영 관점, 추적 가능성을 반영해야 한다."
+            },
+            {
+              role: "user",
+              content: this.buildStagePrompt(input)
+            }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) {
+        return null;
+      }
+
+      return JSON.parse(content) as StageOutput;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildStagePrompt(input: {
+    artifactKey: ArtifactKey;
+    generatedAt: string;
+    projectName: string;
+    prompt: string;
+    contextSummary: string;
+    recentLogs: GenerationLogItem[];
+    currentArtifacts: WorkspaceArtifactSet;
+  }) {
+    const previousArtifacts = artifactOrder
+      .slice(0, artifactOrder.indexOf(input.artifactKey))
+      .filter((artifactKey) => this.isGeneratedDocument(input.currentArtifacts[artifactKey]))
+      .map((artifactKey) => this.summarizeDocument(input.currentArtifacts[artifactKey]))
+      .join("\n\n");
+
+    const recentLogs = input.recentLogs
+      .slice(0, 5)
+      .map((log) => `- ${log.createdAt}: ${log.summary}`)
+      .join("\n");
+
+    return [
+      "다음 형식으로만 응답해.",
+      '{ "document": { "kind": "", "title": "", "version": "draft", "generatedAt": "", "sections": [], "visualization": {} } }',
+      "sections는 최소 3개 이상이며, 각 section은 title, summary, bullets를 가진다.",
+      "bullets는 무엇을/왜/예외사항 중심으로 작성한다.",
+      this.getStageSchema(input.artifactKey),
+      this.getStageQualityRules(input.artifactKey),
+      `프로젝트명: ${input.projectName}`,
+      `현재 요청: ${input.prompt}`,
+      `누적 컨텍스트 요약: ${input.contextSummary}`,
+      recentLogs ? `최근 생성 로그:\n${recentLogs}` : "최근 생성 로그: 없음",
+      previousArtifacts ? `이전 단계 산출물 요약:\n${previousArtifacts}` : "이전 단계 산출물 요약: 없음",
+      `이번에 생성할 대상: ${input.artifactKey}`,
+      `generatedAt에는 ${input.generatedAt}를 사용해`
+    ].join("\n\n");
+  }
+
+  private getStageSchema(artifactKey: ArtifactKey) {
+    switch (artifactKey) {
+      case "prd":
+        return [
+          'document.kind는 "prd"다.',
+          'visualization은 포함하지 않아도 된다.',
+          "PRD에는 최소한 제품 목표, 핵심 사용자, KPI, 범위/제약조건을 포함한다."
+        ].join("\n");
+      case "featureSpec":
+        return [
+          'document.kind는 "feature-spec"다.',
+          'visualization은 반드시 { "type": "feature-flow", "rootNodeId": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
+          "기능명세는 기능 단위, 권한, 상태, 예외 처리, 비기능 요구사항을 포함한다."
+        ].join("\n");
+      case "policySpec":
+        return [
+          'document.kind는 "policy-spec"다.',
+          'visualization은 반드시 { "type": "policy-table", "title": "", "columns": [{ "key": "", "label": "" }], "rows": [{ "id": "", "values": { "columnKey": "cellValue" } }] } 구조를 따른다.',
+          "정책 테이블은 권한, 조건, 승인, 예외, 감사/비고 항목이 드러나게 설계한다."
+        ].join("\n");
+      case "userFlow":
+        return [
+          'document.kind는 "user-flow"다.',
+          'visualization은 반드시 { "type": "tree-map", "title": "", "root": { "id": "", "label": "", "description": "", "accent": "primary|secondary|neutral", "children": [] } } 구조를 따른다.',
+          "트리는 depth 제한 없이 확장 가능해야 하며 역할별 진입점과 주요 경로가 드러나야 한다."
+        ].join("\n");
+      case "flowChart":
+        return [
+          'document.kind는 "flow-chart"다.',
+          'visualization은 반드시 { "type": "flow-chart", "title": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "row": 0, "shape": "terminator|process|decision|document|subprocess", "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
+          "흐름도는 위에서 아래로 진행되고, 조건 분기는 좌우로 확장되며 실패/재처리 경로를 포함한다."
+        ].join("\n");
+    }
+  }
+
+  private getStageQualityRules(artifactKey: ArtifactKey) {
+    const commonRules = [
+      "문서 간 용어를 일관되게 유지한다.",
+      "애매한 표현 대신 구현 가능한 수준의 정책/흐름/예외를 적는다.",
+      "실무 검토에 필요한 누락 항목이 없도록 작성한다."
+    ];
+
+    const stageRules: Record<ArtifactKey, string[]> = {
+      prd: ["목표, 범위, 핵심 사용자, KPI, 제약조건을 분리한다."],
+      featureSpec: ["기능별 흐름과 시스템 책임, 예외 처리, 비기능 요구사항을 분리한다."],
+      policySpec: ["권한, 승인, 예외, 조건, 로그 관점을 테이블에 반영한다."],
+      userFlow: ["메뉴 구조뿐 아니라 사용자 역할별 주요 경로를 포함한다."],
+      flowChart: ["업무 절차, 분기, 실패, 재시도, 완료 경로를 반드시 표현한다."]
+    };
+
+    return ["품질 규칙:", ...commonRules, ...stageRules[artifactKey]].map((line) => `- ${line}`).join("\n");
+  }
+
+  private resolveStartIndex(targetArtifact: ArtifactKey | undefined, currentArtifacts: WorkspaceArtifactSet) {
+    if (!targetArtifact) {
+      return 0;
+    }
+
+    const requestedIndex = artifactOrder.indexOf(targetArtifact);
+    for (let index = 0; index < requestedIndex; index += 1) {
+      if (!this.isGeneratedDocument(currentArtifacts[artifactOrder[index]])) {
+        return 0;
       }
     }
 
-    return this.buildTemplateArtifacts(workspaceName, prompt);
+    return requestedIndex;
   }
 
-  private buildTemplateArtifacts(workspaceName: string, prompt: string): LlmOutput {
-    const baseSections = this.buildSections(workspaceName, prompt);
-    const generatedAt = new Date().toISOString();
+  private isGeneratedDocument(document: ArtifactDocument) {
+    return document.version !== "v0.0";
+  }
 
+  private buildQualityChecklistMap(artifacts: WorkspaceArtifactSet): Record<ArtifactKey, string[]> {
     return {
-      artifacts: {
-        prd: this.createDocument("prd", `${workspaceName} PRD`, generatedAt, baseSections.prd),
-        featureSpec: this.createDocument(
-          "feature-spec",
-          `${workspaceName} 기능명세서`,
-          generatedAt,
-          baseSections.featureSpec,
-          this.buildFeatureFlowVisualization(workspaceName)
-        ),
-        policySpec: this.createDocument(
-          "policy-spec",
-          `${workspaceName} 정책서`,
-          generatedAt,
-          baseSections.policySpec,
-          this.buildPolicyTableVisualization(workspaceName)
-        ),
-        userFlow: this.createDocument(
-          "user-flow",
-          `${workspaceName} 유저플로우`,
-          generatedAt,
-          baseSections.userFlow,
-          this.buildUserFlowVisualization()
-        ),
-        flowChart: this.createDocument(
-          "flow-chart",
-          `${workspaceName} 흐름도차트`,
-          generatedAt,
-          baseSections.flowChart,
-          this.buildFlowChartVisualization(workspaceName)
-        )
-      },
-      suggestedActions: [
-        "관리자 백오피스 요구사항을 추가해줘",
-        "운영 정책과 예외 케이스를 보강해줘",
-        "릴리즈 범위를 MVP와 Phase 2로 나눠줘"
-      ]
+      prd: this.buildQualityChecklist("prd", artifacts.prd),
+      featureSpec: this.buildQualityChecklist("featureSpec", artifacts.featureSpec),
+      policySpec: this.buildQualityChecklist("policySpec", artifacts.policySpec),
+      userFlow: this.buildQualityChecklist("userFlow", artifacts.userFlow),
+      flowChart: this.buildQualityChecklist("flowChart", artifacts.flowChart)
     };
+  }
+
+  private buildQualityChecklist(artifactKey: ArtifactKey, document: ArtifactDocument): string[] {
+    const sections = document.sections.map((section) => section.title).join(", ");
+    const visualization = document.visualization?.type ?? "none";
+
+    const base = [
+      `섹션 구성 확인: ${sections || "없음"}`,
+      `시각화 타입 확인: ${visualization}`,
+      `문서 길이 확인: 섹션 ${document.sections.length}개`
+    ];
+
+    switch (artifactKey) {
+      case "prd":
+        return [...base, "목표/KPI/범위/제약 조건을 분리했는지 확인"];
+      case "featureSpec":
+        return [...base, "기능 플로우, 예외 처리, 비기능 요구사항을 포함했는지 확인"];
+      case "policySpec":
+        return [...base, "정책 컬럼 구조와 권한/예외 조건이 충분한지 확인"];
+      case "userFlow":
+        return [...base, "역할별 진입점과 depth 구조가 표현되었는지 확인"];
+      case "flowChart":
+        return [...base, "분기, 재처리, 종료 흐름이 연결되었는지 확인"];
+    }
+  }
+
+  private buildSuggestedActions(artifacts: WorkspaceArtifactSet, prompt: string): string[] {
+    return [
+      `이 요청에서 놓친 운영 정책을 ${artifacts.policySpec.title} 기준으로 보강해줘`,
+      `${artifacts.userFlow.title}를 관리자/운영자 관점으로 확장해줘`,
+      `${prompt.slice(0, 48)} 관련 예외 흐름과 실패 처리 시나리오를 추가해줘`
+    ];
+  }
+
+  private buildContextSummary(projectName: string, prompt: string, artifacts: WorkspaceArtifactSet) {
+    return [
+      `${projectName} 프로젝트는 최신 요청 "${prompt}"를 반영해 문서를 갱신했습니다.`,
+      `현재 PRD는 ${artifacts.prd.sections[0]?.title ?? "목표"}를 기준으로 범위를 정의합니다.`,
+      `기능명세와 정책서는 구현/운영 규칙을 분리했고, 유저플로우와 흐름도는 이를 사용자/업무 절차 관점으로 연결합니다.`
+    ].join(" ");
+  }
+
+  private summarizeDocument(document: ArtifactDocument) {
+    return [
+      `${document.title} (${document.kind})`,
+      ...document.sections.map((section) => `- ${section.title}: ${section.summary}`)
+    ].join("\n");
+  }
+
+  private buildTemplateDocument(
+    artifactKey: ArtifactKey,
+    projectName: string,
+    prompt: string,
+    generatedAt: string,
+    currentArtifacts: WorkspaceArtifactSet
+  ): ArtifactDocument {
+    switch (artifactKey) {
+      case "prd":
+        return this.createDocument("prd", `${projectName} PRD`, generatedAt, [
+          {
+            title: "제품 목표",
+            summary: `${projectName} 프로젝트는 ${prompt} 요청을 해결하기 위한 실무형 기획 산출물을 제공합니다.`,
+            bullets: [
+              `핵심 문제: ${prompt}`,
+              "대규모 시스템에서도 재사용 가능한 문서 구조를 표준화합니다.",
+              "기획-디자인-개발-운영이 동일한 기준 문서를 공유합니다."
+            ]
+          },
+          {
+            title: "주요 사용자 및 이해관계자",
+            summary: "실제 운영 조직 기준으로 문서 소비자와 사용자 집단을 구분합니다.",
+            bullets: ["PM/PO", "서비스기획자", "운영자/관리자", "개발/QA 리드"]
+          },
+          {
+            title: "핵심 지표 및 제약",
+            summary: "성과 지표와 제약조건을 함께 정의합니다.",
+            bullets: ["처리 시간, 성공률, 재사용률", "권한/예외/로그 추적 필요", "대규모 운영 대응성 확보"]
+          }
+        ]);
+      case "featureSpec":
+        return this.createDocument(
+          "feature-spec",
+          `${projectName} 기능명세서`,
+          generatedAt,
+          [
+            {
+              title: "기능 구조",
+              summary: `${currentArtifacts.prd.title}를 기반으로 기능 단위와 주요 책임을 분리합니다.`,
+              bullets: [
+                "입력 수집, 문서 생성, 버전 관리, 로그 추적 기능을 구분합니다.",
+                "실무 구현을 고려한 상태 전이와 예외 처리를 포함합니다.",
+                "후속 개선 요청이 문서와 로그에 반영되도록 설계합니다."
+              ]
+            },
+            {
+              title: "권한 및 상태",
+              summary: "작성자, 검토자, 운영자의 책임을 분리합니다.",
+              bullets: ["생성 요청 권한", "문서 확인/비교 권한", "운영 로그 조회 권한"]
+            },
+            {
+              title: "비기능 요구사항",
+              summary: "대규모 시스템 대응 품질 기준을 함께 정의합니다.",
+              bullets: ["응답 안정성", "버전 추적", "감사 로그", "재생성 가능성"]
+            }
+          ],
+          this.buildFeatureFlowVisualization(projectName)
+        );
+      case "policySpec":
+        return this.createDocument(
+          "policy-spec",
+          `${projectName} 정책서`,
+          generatedAt,
+          [
+            {
+              title: "운영 정책 범위",
+              summary: `${currentArtifacts.featureSpec.title}에 맞춰 운영 정책과 승인/예외 규칙을 정리합니다.`,
+              bullets: [
+                "권한과 승인 정책을 분리합니다.",
+                "예외 처리와 로그 기록 정책을 명시합니다.",
+                "정책 변경 시 버전 추적이 가능해야 합니다."
+              ]
+            },
+            {
+              title: "검토 포인트",
+              summary: "정책서는 개발 규칙과 운영 규칙의 공통 기준 문서입니다.",
+              bullets: ["권한 매트릭스", "상태 변경 조건", "예외 승인 흐름"]
+            },
+            {
+              title: "감사 및 추적",
+              summary: "누가 어떤 규칙을 근거로 변경했는지 추적 가능해야 합니다.",
+              bullets: ["감사 로그", "승인 이력", "비고 및 운영 메모"]
+            }
+          ],
+          this.buildPolicyTableVisualization(projectName)
+        );
+      case "userFlow":
+        return this.createDocument(
+          "user-flow",
+          `${projectName} 유저플로우`,
+          generatedAt,
+          [
+            {
+              title: "사용자 여정",
+              summary: `${currentArtifacts.policySpec.title}의 정책을 반영한 역할별 여정을 정의합니다.`,
+              bullets: ["프로젝트 진입", "문서 생성", "버전 비교", "운영 검토"]
+            },
+            {
+              title: "주요 분기",
+              summary: "생성 성공/실패와 추가 보완 요청 흐름을 분리합니다.",
+              bullets: ["입력 부족", "품질 보완", "기존 프로젝트 이어쓰기"]
+            },
+            {
+              title: "운영자 관점",
+              summary: "일반 사용자 외 운영자가 보는 흐름을 포함합니다.",
+              bullets: ["로그 조회", "버전 확인", "정책 재검토"]
+            }
+          ],
+          this.buildUserFlowVisualization()
+        );
+      case "flowChart":
+        return this.createDocument(
+          "flow-chart",
+          `${projectName} 흐름도차트`,
+          generatedAt,
+          [
+            {
+              title: "업무 처리 절차",
+              summary: `${currentArtifacts.userFlow.title}를 실제 운영 절차 기준으로 재구성합니다.`,
+              bullets: ["요청 접수", "컨텍스트 적재", "문서 생성", "검증", "저장"]
+            },
+            {
+              title: "분기 및 예외",
+              summary: "보완 요청과 실패 시 재실행 흐름을 포함합니다.",
+              bullets: ["입력 보완", "품질 미달 시 재생성", "운영 승인 후 완료"]
+            },
+            {
+              title: "실무 활용",
+              summary: "기획, 개발, 운영이 같은 절차를 기준으로 협업합니다.",
+              bullets: ["분기 규칙 검토", "재시도 경로 확인", "운영 인수인계 활용"]
+            }
+          ],
+          this.buildFlowChartVisualization(projectName)
+        );
+    }
   }
 
   private createDocument(
@@ -142,93 +470,76 @@ export class LlmService {
     return {
       kind,
       title,
-      version: "v1.0",
+      version: "draft",
       generatedAt,
       sections,
       visualization
     };
   }
 
-  private buildFeatureFlowVisualization(workspaceName: string): FeatureFlowVisualization {
+  private buildFeatureFlowVisualization(projectName: string): FeatureFlowVisualization {
     return {
       type: "feature-flow",
       rootNodeId: "root",
       nodes: [
-        {
-          id: "root",
-          label: `${workspaceName} 기획 생성`,
-          description: "한 줄 아이디어를 입력하고 산출물 생성 세션을 시작합니다.",
-          column: 0,
-          accent: "primary"
-        },
-        {
-          id: "analyze",
-          label: "요청 분석",
-          description: "핵심 목적, 대상 사용자, 제약조건을 분해합니다.",
-          column: 1,
-          accent: "secondary"
-        },
-        {
-          id: "standardize",
-          label: "문서 구조 표준화",
-          description: "PRD, 기능명세서, 유저플로우 공통 용어와 필드를 정렬합니다.",
-          column: 1,
-          accent: "secondary"
-        },
-        {
-          id: "prd",
-          label: "PRD 초안 생성",
-          description: "제품 목표, 범위, KPI를 산출합니다.",
-          column: 2,
-          accent: "neutral"
-        },
-        {
-          id: "feature",
-          label: "기능명세 생성",
-          description: "핵심 기능과 예외 정책을 구체화합니다.",
-          column: 2,
-          accent: "primary"
-        },
-        {
-          id: "user-flow",
-          label: "유저플로우 생성",
-          description: "IA 및 주요 사용자 여정을 구조화합니다.",
-          column: 2,
-          accent: "secondary"
-        },
-        {
-          id: "history",
-          label: "히스토리 저장",
-          description: "생성 세션과 결과물을 Supabase에 저장합니다.",
-          column: 3,
-          accent: "neutral"
-        },
-        {
-          id: "export",
-          label: "다운로드 제공",
-          description: "PNG, PDF, Markdown 형식으로 내보냅니다.",
-          column: 3,
-          accent: "primary"
-        },
-        {
-          id: "reuse",
-          label: "재생성 및 재사용",
-          description: "이전 히스토리를 기반으로 후속 기획을 이어갑니다.",
-          column: 4,
-          accent: "secondary"
-        }
+        { id: "root", label: `${projectName} 요청 입력`, description: "프로젝트 개선 요청을 접수합니다.", column: 0, accent: "primary" },
+        { id: "context", label: "프로젝트 컨텍스트 적재", description: "이전 로그와 문서를 불러옵니다.", column: 1, accent: "secondary" },
+        { id: "prd", label: "PRD 정렬", description: "목표, 범위, KPI를 재정렬합니다.", column: 2, accent: "neutral" },
+        { id: "feature", label: "기능명세 보강", description: "기능, 상태, 예외 처리를 상세화합니다.", column: 3, accent: "primary" },
+        { id: "policy", label: "정책 검증", description: "권한, 승인, 예외 규칙을 연결합니다.", column: 3, accent: "secondary" },
+        { id: "flow", label: "사용자/업무 흐름 동기화", description: "유저플로우와 흐름도를 재정렬합니다.", column: 4, accent: "secondary" },
+        { id: "version", label: "버전 저장", description: "프로젝트 로그와 문서 버전을 저장합니다.", column: 5, accent: "neutral" }
       ],
       edges: [
-        { from: "root", to: "analyze", label: "입력" },
-        { from: "root", to: "standardize", label: "정규화" },
-        { from: "analyze", to: "prd", label: "산출" },
-        { from: "standardize", to: "feature", label: "정의" },
-        { from: "standardize", to: "user-flow", label: "구조화" },
-        { from: "prd", to: "history", label: "저장" },
-        { from: "feature", to: "export", label: "내보내기" },
-        { from: "user-flow", to: "export", label: "시각화" },
-        { from: "history", to: "reuse", label: "재사용" },
-        { from: "export", to: "reuse", label: "공유" }
+        { from: "root", to: "context", label: "요청" },
+        { from: "context", to: "prd", label: "정리" },
+        { from: "prd", to: "feature", label: "상세화" },
+        { from: "prd", to: "policy", label: "정책 추출" },
+        { from: "feature", to: "flow", label: "구조화" },
+        { from: "policy", to: "flow", label: "검증" },
+        { from: "flow", to: "version", label: "저장" }
+      ]
+    };
+  }
+
+  private buildPolicyTableVisualization(projectName: string): PolicyTableVisualization {
+    return {
+      type: "policy-table",
+      title: `${projectName} 정책 정의서`,
+      columns: [
+        { key: "policyCode", label: "정책 코드" },
+        { key: "policyName", label: "정책명" },
+        { key: "target", label: "적용 대상" },
+        { key: "condition", label: "조건" },
+        { key: "rule", label: "정책 정의" },
+        { key: "approval", label: "승인/예외" },
+        { key: "note", label: "비고" }
+      ],
+      rows: [
+        {
+          id: "policy-01",
+          values: {
+            policyCode: "gen-01",
+            policyName: "프로젝트 생성 정책",
+            target: "기획자",
+            condition: "새 요청 생성 시",
+            rule: "프로젝트 컨텍스트와 최근 로그를 함께 적재한다.",
+            approval: "운영자 검토 가능",
+            note: "프로젝트 단위로 누적 저장"
+          }
+        },
+        {
+          id: "policy-02",
+          values: {
+            policyCode: "gen-02",
+            policyName: "문서 재생성 정책",
+            target: "기획자/운영자",
+            condition: "특정 문서만 보강할 때",
+            rule: "선행 문서는 유지하고 대상 문서부터 하위 문서를 재생성한다.",
+            approval: "예외 시 수동 재실행",
+            note: "버전과 변경 근거 로그 저장"
+          }
+        }
       ]
     };
   }
@@ -236,57 +547,30 @@ export class LlmService {
   private buildUserFlowVisualization(): TreeMapVisualization {
     return {
       type: "tree-map",
-      title: "사용자 여정 및 IA 구조",
+      title: "프로젝트 기반 유저플로우",
       root: {
         id: "root",
-        label: "서비스 시작",
-        description: "사용자가 서비스에 진입한 뒤 목적에 따라 메뉴를 확장합니다.",
+        label: "프로젝트 선택",
+        description: "새 프로젝트를 만들거나 기존 프로젝트를 불러옵니다.",
         accent: "neutral",
         children: [
           {
-            id: "auth",
-            label: "인증",
+            id: "project-new",
+            label: "새 프로젝트",
             accent: "primary",
             children: [
-              { id: "auth-login", label: "로그인", accent: "primary" },
-              { id: "auth-signup", label: "회원가입" },
-              { id: "auth-password", label: "비밀번호 찾기" }
+              { id: "project-new-name", label: "프로젝트명 입력" },
+              { id: "project-new-create", label: "빈 컨텍스트 생성", accent: "secondary" }
             ]
           },
           {
-            id: "workspace",
-            label: "대시보드",
+            id: "project-load",
+            label: "기존 프로젝트 불러오기",
             accent: "primary",
             children: [
-              {
-                id: "generate",
-                label: "문서 생성",
-                children: [
-                  { id: "generate-request", label: "요청 입력" },
-                  { id: "generate-preview", label: "산출물 미리보기" },
-                  { id: "generate-run", label: "문서 생성 실행", accent: "secondary" }
-                ]
-              },
-              {
-                id: "history",
-                label: "히스토리",
-                children: [
-                  { id: "history-list", label: "생성 히스토리 조회" },
-                  { id: "history-detail", label: "문서 상세 보기" },
-                  { id: "history-download", label: "다운로드" }
-                ]
-              },
-              {
-                id: "setting",
-                label: "설정",
-                accent: "secondary",
-                children: [
-                  { id: "setting-template", label: "출력 템플릿 설정" },
-                  { id: "setting-provider", label: "LLM Provider 설정" },
-                  { id: "setting-profile", label: "프로필 수정" },
-                  { id: "setting-logout", label: "로그아웃" }
-                ]
-              }
+              { id: "project-load-log", label: "프로젝트 로그 조회" },
+              { id: "project-load-artifact", label: "최신 문서 버전 열기" },
+              { id: "project-load-improve", label: "추가 요청으로 개선", accent: "secondary" }
             ]
           }
         ]
@@ -294,286 +578,32 @@ export class LlmService {
     };
   }
 
-  private buildFlowChartVisualization(workspaceName: string): FlowChartVisualization {
+  private buildFlowChartVisualization(projectName: string): FlowChartVisualization {
     return {
       type: "flow-chart",
-      title: `${workspaceName} 업무 흐름도`,
+      title: `${projectName} 개선 흐름도`,
       nodes: [
-        {
-          id: "start",
-          label: "요청 접수",
-          description: "사용자가 아이디어와 요구사항을 입력합니다.",
-          column: 1,
-          row: 0,
-          shape: "terminator",
-          accent: "neutral"
-        },
-        {
-          id: "validate",
-          label: "입력 조건 확인",
-          description: "입력 길이, 필수 정보, 제약조건 포함 여부를 검사합니다.",
-          column: 1,
-          row: 1,
-          shape: "decision",
-          accent: "primary"
-        },
-        {
-          id: "guide",
-          label: "보완 질문 제안",
-          description: "입력이 부족하면 예시와 보완 질문을 제시합니다.",
-          column: 2,
-          row: 1,
-          shape: "document",
-          accent: "secondary"
-        },
-        {
-          id: "normalize",
-          label: "요청 정규화",
-          description: "도메인, 사용자, 정책, 산출물 타입을 정리합니다.",
-          column: 1,
-          row: 2,
-          shape: "process",
-          accent: "secondary"
-        },
-        {
-          id: "generate",
-          label: "산출물 생성 엔진 실행",
-          description: "PRD, 기능명세서, 정책서, 유저플로우, 흐름도를 생성합니다.",
-          column: 1,
-          row: 3,
-          shape: "subprocess",
-          accent: "primary"
-        },
-        {
-          id: "review",
-          label: "결과 품질 점검",
-          description: "구조 누락 여부와 핵심 섹션 충족 여부를 검토합니다.",
-          column: 1,
-          row: 4,
-          shape: "decision",
-          accent: "primary"
-        },
-        {
-          id: "retry",
-          label: "재생성 또는 수정",
-          description: "누락 시 프롬프트를 보강하고 다시 생성합니다.",
-          column: 2,
-          row: 4,
-          shape: "process",
-          accent: "secondary"
-        },
-        {
-          id: "store",
-          label: "세션 저장",
-          description: "Supabase에 세션과 문서를 저장합니다.",
-          column: 1,
-          row: 5,
-          shape: "process",
-          accent: "neutral"
-        },
-        {
-          id: "end",
-          label: "다운로드 및 공유",
-          description: "검토 완료 후 문서를 내보내고 공유합니다.",
-          column: 1,
-          row: 6,
-          shape: "terminator",
-          accent: "neutral"
-        }
+        { id: "start", label: "프로젝트 선택", description: "새 프로젝트 또는 기존 프로젝트를 선택합니다.", column: 1, row: 0, shape: "terminator", accent: "neutral" },
+        { id: "load", label: "컨텍스트 적재", description: "최신 문서와 로그를 불러옵니다.", column: 1, row: 1, shape: "process", accent: "secondary" },
+        { id: "check", label: "요청 충분성 검토", description: "추가 요청 내용이 충분한지 검토합니다.", column: 1, row: 2, shape: "decision", accent: "primary" },
+        { id: "guide", label: "보완 질문 제시", description: "입력이 부족하면 질문을 제시합니다.", column: 2, row: 2, shape: "document", accent: "secondary" },
+        { id: "generate", label: "문서 순차 생성", description: "PRD부터 흐름도차트까지 순차적으로 갱신합니다.", column: 1, row: 3, shape: "subprocess", accent: "primary" },
+        { id: "review", label: "품질 체크", description: "누락 항목과 정합성을 점검합니다.", column: 1, row: 4, shape: "decision", accent: "primary" },
+        { id: "retry", label: "문서별 재생성", description: "필요한 문서부터 재생성합니다.", column: 2, row: 4, shape: "process", accent: "secondary" },
+        { id: "store", label: "프로젝트 로그 저장", description: "세션 로그와 버전을 저장합니다.", column: 1, row: 5, shape: "process", accent: "neutral" },
+        { id: "finish", label: "검토 완료", description: "프로젝트 개선 결과를 확인합니다.", column: 1, row: 6, shape: "terminator", accent: "neutral" }
       ],
       edges: [
-        { from: "start", to: "validate" },
-        { from: "validate", to: "normalize", label: "YES" },
-        { from: "validate", to: "guide", label: "NO" },
-        { from: "guide", to: "validate", label: "재입력" },
-        { from: "normalize", to: "generate" },
+        { from: "start", to: "load" },
+        { from: "load", to: "check" },
+        { from: "check", to: "generate", label: "YES" },
+        { from: "check", to: "guide", label: "NO" },
+        { from: "guide", to: "check", label: "재입력" },
         { from: "generate", to: "review" },
         { from: "review", to: "store", label: "적합" },
         { from: "review", to: "retry", label: "보완 필요" },
         { from: "retry", to: "generate", label: "재실행" },
-        { from: "store", to: "end" }
-      ]
-    };
-  }
-
-  private buildPolicyTableVisualization(workspaceName: string): PolicyTableVisualization {
-    return {
-      type: "policy-table",
-      title: `${workspaceName} 정책 정의서`,
-      columns: [
-        { key: "policyCode", label: "정책 코드" },
-        { key: "policyName", label: "정책명" },
-        { key: "detail", label: "세부 항목" },
-        { key: "target", label: "적용 대상" },
-        { key: "rule", label: "정책 정의" },
-        { key: "note", label: "비고" }
-      ],
-      rows: [
-        {
-          id: "policy-auth-01",
-          values: {
-            policyCode: "auth-01",
-            policyName: "로그인 정책",
-            detail: "비밀번호 재시도",
-            target: "비회원/회원",
-            rule: "5회 이상 실패 시 10분간 로그인 제한",
-            note: "보안 이벤트 로그 기록"
-          }
-        },
-        {
-          id: "policy-booking-01",
-          values: {
-            policyCode: "booking-01",
-            policyName: "예약 정책",
-            detail: "동시 예약 충돌",
-            target: "일반 사용자",
-            rule: "동일 자원, 동일 시간대에는 선점 요청만 예약 성공 처리",
-            note: "실패 시 대체 시간 제안"
-          }
-        },
-        {
-          id: "policy-notice-01",
-          values: {
-            policyCode: "notice-01",
-            policyName: "알림 정책",
-            detail: "예약 변경 알림",
-            target: "예약자/운영자",
-            rule: "예약 생성, 변경, 취소 시 앱 알림과 이메일을 발송",
-            note: "사용자 설정에 따라 채널 제어"
-          }
-        }
-      ]
-    };
-  }
-
-  private buildSections(workspaceName: string, prompt: string) {
-    return {
-      prd: [
-        {
-          title: "제품 비전",
-          summary: `${workspaceName}는 아이디어 입력만으로 실무형 산출물을 생성하는 AI 기획 워크스페이스입니다.`,
-          bullets: [
-            `핵심 문제: ${prompt}`,
-            "기획자와 디자이너, 개발자의 초기 정렬 시간을 줄입니다.",
-            "기업용 서비스 수준의 재사용성과 문서 표준화를 목표로 합니다."
-          ]
-        },
-        {
-          title: "주요 사용자",
-          summary: "실무 조직에서 문서 생산성과 품질 표준화가 필요한 역할을 대상으로 합니다.",
-          bullets: [
-            "PM/PO: 요구사항 정의 및 범위 관리",
-            "서비스기획자: 기능 상세화 및 정책 설계",
-            "디자인/개발 리드: 협업용 기준 문서 확보"
-          ]
-        },
-        {
-          title: "핵심 성공지표",
-          summary: "생성 품질과 협업 효율을 기준으로 운영 지표를 설계합니다.",
-          bullets: [
-            "문서 생성 완료율 95% 이상",
-            "재생성 포함 평균 생성 시간 60초 이내",
-            "다운로드 및 재활용 전환율 40% 이상"
-          ]
-        }
-      ],
-      featureSpec: [
-        {
-          title: "핵심 기능",
-          summary: "사용자 화면과 운영 관점에서 필수 기능을 정의합니다.",
-          bullets: [
-            "좌측 LLM 챗 입력 패널과 프롬프트 보완 가이드",
-            "우측 탭 기반 산출물 캔버스(PRD, 기능명세서, 유저플로우)",
-            "PNG/PDF/Markdown 다운로드 및 생성 히스토리 조회"
-          ]
-        },
-        {
-          title: "시스템 요구사항",
-          summary: "중견기업 이상 환경을 고려한 운영 안정성과 확장성을 포함합니다.",
-          bullets: [
-            "세션/문서/다운로드 이력 저장",
-            "LLM provider 추상화와 장애 폴백 구조",
-            "권한/감사로그/버전관리 확장 가능 구조"
-          ]
-        },
-        {
-          title: "비기능 요구사항",
-          summary: "운영 품질을 보장하는 기준을 함께 정의합니다.",
-          bullets: [
-            "API 레이어에서 입력 검증과 예외 응답 표준화",
-            "Supabase PostgreSQL 기반 영속화",
-            "모노레포 기반 CI/CD와 서비스 분리 배포 대응"
-          ]
-        }
-      ],
-      policySpec: [
-        {
-          title: "정책 정의 범위",
-          summary: "기능 구현 이전에 서비스 운영 정책과 권한/예외 규칙을 구조화합니다.",
-          bullets: [
-            "인증, 예약, 결제, 알림, 게시판 등 정책 단위를 분리해 정의합니다.",
-            "테이블 컬럼은 도메인에 맞게 AI가 유연하게 추가/변경할 수 있습니다.",
-            "정책 코드는 운영/개발/QA가 공통으로 참조할 수 있도록 식별자로 관리합니다."
-          ]
-        },
-        {
-          title: "활용 목적",
-          summary: "정책서는 화면 명세와 별개로 운영 규칙과 권한 규칙을 문서화하는 기준 문서입니다.",
-          bullets: [
-            "예외 처리와 권한 차이를 명확히 정의합니다.",
-            "기획 변경 시 정책 단위 diff와 이력 관리를 쉽게 합니다.",
-            "백엔드 검증 규칙과 관리자 운영 정책 수립에 활용합니다."
-          ]
-        }
-      ],
-      userFlow: [
-        {
-          title: "사용자 메인 여정",
-          summary: "사용자는 아이디어 한 줄 입력 후 산출물을 생성하고 저장합니다.",
-          bullets: [
-            "아이디어 입력 -> 생성 요청 -> 문서 응답 렌더링",
-            "문서 탭 전환 -> 검토 -> 다운로드",
-            "히스토리 열기 -> 과거 세션 탐색 -> 재사용"
-          ]
-        },
-        {
-          title: "예외 처리 플로우",
-          summary: "실무형 서비스에 필요한 실패 대응 플로우를 정의합니다.",
-          bullets: [
-            "입력 부족 시 추가 질문 또는 예시 입력 제안",
-            "LLM 오류 시 템플릿 기반 초안 생성",
-            "DB 저장 실패 시 메모리 캐시로 임시 보존"
-          ]
-        },
-        {
-          title: "운영자 플로우",
-          summary: "서비스 운영 관점에서 모니터링과 이력 관리 흐름을 확보합니다.",
-          bullets: [
-            "생성 세션 상태 확인",
-            "문서 다운로드 현황 조회",
-            "장애 발생 시 재시도 및 로그 분석"
-          ]
-        }
-      ],
-      flowChart: [
-        {
-          title: "업무 흐름 기준",
-          summary: "흐름도차트는 메뉴 구조도가 아니라 실제 처리 절차와 분기 규칙을 표현합니다.",
-          bullets: [
-            "시작/종료, 처리, 문서, 분기 노드를 분리해 표현합니다.",
-            "조건 분기에는 decision 노드를 사용하고 edge label로 YES/NO를 표기합니다.",
-            "좌->우 진행을 기본으로 하되 예외 처리와 재시도는 상하 분기로 표현합니다."
-          ]
-        },
-        {
-          title: "활용 목적",
-          summary: "운영자, 기획자, 개발자가 동일한 실행 흐름을 기준으로 협업하도록 돕습니다.",
-          bullets: [
-            "화면 중심이 아닌 업무 프로세스 중심으로 단계별 책임을 명확히 합니다.",
-            "예외 처리, 검토, 재시도 루프를 시각적으로 확인할 수 있습니다.",
-            "정책서 및 기능명세서의 세부 규칙을 실행 흐름으로 연결합니다."
-          ]
-        }
+        { from: "store", to: "finish" }
       ]
     };
   }
