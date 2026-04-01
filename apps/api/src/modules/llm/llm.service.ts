@@ -8,6 +8,8 @@ import type {
   FlowChartVisualization,
   GenerationLogItem,
   PolicyTableVisualization,
+  ScreenSpecInput,
+  ScreenSpecVisualization,
   TreeMapVisualization,
   WorkspaceArtifactSet
 } from "@mottor-plan/shared";
@@ -20,6 +22,7 @@ type GenerationPipelineInput = {
   projectName: string;
   domainType: string;
   prompt: string;
+  screenInputs: ScreenSpecInput[];
   targetArtifact?: ArtifactKey;
   currentArtifacts: WorkspaceArtifactSet;
   recentLogs: GenerationLogItem[];
@@ -33,7 +36,7 @@ type GenerationPipelineOutput = {
   qualityChecklists: Record<ArtifactKey, string[]>;
 };
 
-const artifactOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart"];
+const artifactOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart", "screenSpec"];
 
 @Injectable()
 export class LlmService {
@@ -58,6 +61,7 @@ export class LlmService {
         projectName: input.projectName,
         domainType: input.domainType,
         prompt: input.prompt,
+        screenInputs: input.screenInputs,
         contextSummary: input.contextSummary,
         recentLogs: input.recentLogs,
         currentArtifacts: workingArtifacts
@@ -72,6 +76,7 @@ export class LlmService {
         projectName: input.projectName,
         domainType: input.domainType,
         prompt: input.prompt,
+        screenInputs: input.screenInputs,
         contextSummary: input.contextSummary,
         recentLogs: input.recentLogs,
         currentArtifacts: workingArtifacts
@@ -94,6 +99,7 @@ export class LlmService {
     projectName: string;
     domainType: string;
     prompt: string;
+    screenInputs: ScreenSpecInput[];
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
@@ -117,6 +123,7 @@ export class LlmService {
       input.prompt,
       input.generatedAt,
       input.currentArtifacts,
+      input.screenInputs,
       input.generationDirective
     );
   }
@@ -126,12 +133,13 @@ export class LlmService {
     projectName: string;
     domainType: string;
     prompt: string;
+    screenInputs: ScreenSpecInput[];
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
   }): Promise<ArtifactDocument> {
     const supportingArtifactsSummary = this.buildArtifactSummaryList(
-      ["featureSpec", "policySpec", "userFlow", "flowChart"],
+      ["featureSpec", "policySpec", "userFlow", "flowChart", "screenSpec"],
       input.currentArtifacts
     );
 
@@ -141,6 +149,7 @@ export class LlmService {
       projectName: input.projectName,
       domainType: input.domainType,
       prompt: input.prompt,
+      screenInputs: input.screenInputs,
       contextSummary: input.contextSummary,
       recentLogs: input.recentLogs,
       currentArtifacts: input.currentArtifacts,
@@ -156,6 +165,7 @@ export class LlmService {
     projectName: string;
     domainType: string;
     prompt: string;
+    screenInputs: ScreenSpecInput[];
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
@@ -171,6 +181,7 @@ export class LlmService {
     }
 
     try {
+      const userContent = this.buildStageUserContent(input);
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
@@ -189,7 +200,7 @@ export class LlmService {
             },
             {
               role: "user",
-              content: this.buildStagePrompt(input)
+              content: userContent
             }
           ]
         })
@@ -214,12 +225,44 @@ export class LlmService {
     }
   }
 
+  private buildStageUserContent(input: {
+    artifactKey: ArtifactKey;
+    generatedAt: string;
+    projectName: string;
+    domainType: string;
+    prompt: string;
+    screenInputs: ScreenSpecInput[];
+    contextSummary: string;
+    recentLogs: GenerationLogItem[];
+    currentArtifacts: WorkspaceArtifactSet;
+    supportingArtifactsSummary?: string;
+    generationDirective?: string;
+  }) {
+    const text = this.buildStagePrompt(input);
+
+    if (input.artifactKey !== "screenSpec" || input.screenInputs.length === 0) {
+      return text;
+    }
+
+    return [
+      { type: "text", text },
+      ...input.screenInputs.slice(0, 6).map((screenInput) => ({
+        type: "image_url",
+        image_url: {
+          url: screenInput.imageDataUrl,
+          detail: "high"
+        }
+      }))
+    ];
+  }
+
   private buildStagePrompt(input: {
     artifactKey: ArtifactKey;
     generatedAt: string;
     projectName: string;
     domainType: string;
     prompt: string;
+    screenInputs: ScreenSpecInput[];
     contextSummary: string;
     recentLogs: GenerationLogItem[];
     currentArtifacts: WorkspaceArtifactSet;
@@ -237,6 +280,7 @@ export class LlmService {
       .join("\n");
 
     const domainKnowledgeLayer = this.buildDomainKnowledgeLayer(input.domainType);
+    const screenInputSummary = input.screenInputs.length ? this.buildScreenInputSummary(input.screenInputs) : "";
 
     return [
       "다음 형식으로만 응답해.",
@@ -249,6 +293,7 @@ export class LlmService {
       `도메인 유형: ${input.domainType}`,
       `도메인 지식 계층:\n${domainKnowledgeLayer}`,
       `현재 요청: ${input.prompt}`,
+      screenInputSummary ? `화면 입력 요약:\n${screenInputSummary}` : "",
       input.generationDirective ? `추가 지시사항: ${input.generationDirective}` : "",
       `누적 컨텍스트 요약: ${input.contextSummary}`,
       recentLogs ? `최근 생성 로그:\n${recentLogs}` : "최근 생성 로그: 없음",
@@ -303,6 +348,13 @@ export class LlmService {
           'visualization은 반드시 { "type": "flow-chart", "title": "", "nodes": [{ "id": "", "label": "", "description": "", "column": 0, "row": 0, "shape": "terminator|process|decision|document|subprocess", "accent": "primary|secondary|neutral" }], "edges": [{ "from": "", "to": "", "label": "" }] } 구조를 따른다.',
           "흐름도는 위에서 아래로 진행되고, 조건 분기는 좌우로 확장되며 실패/재처리 경로를 포함한다."
         ].join("\n");
+      case "screenSpec":
+        return [
+          'document.kind는 "screen-spec"다.',
+          'visualization은 반드시 { "type": "screen-spec", "title": "", "screens": [{ "id": "", "screenId": "", "screenName": "", "route": "", "systemName": "", "author": "", "createdDate": "", "imageDataUrl": "", "imageName": "", "notes": "", "markers": [{ "id": "", "number": 1, "x": 12, "y": 20, "title": "", "description": "" }], "descriptionSections": [{ "id": "", "title": "", "bullets": [""] }], "functionalRequirements": [{ "id": "", "no": 1, "title": "", "description": "" }], "policyReferences": [{ "id": "", "policyName": "", "summary": "" }], "relatedScreens": [{ "id": "", "label": "", "targetScreenId": "", "description": "" }], "changeLog": [{ "id": "", "date": "", "description": "" }] }] } 구조를 따른다.',
+          "화면기획서는 업로드된 이미지의 주요 영역을 번호 마커로 표시하고, 우측 설명/기능정의/정책/수정로그와 연결한다.",
+          "샘플 대기업 산출물처럼 메타 정보, 화면 설명, 기능정의, 정책 연결, 관련 화면, 수정 로그를 포함한다."
+        ].join("\n");
     }
   }
 
@@ -325,7 +377,13 @@ export class LlmService {
       featureSpec: ["기능별 흐름과 시스템 책임, 예외 처리, 비기능 요구사항을 분리한다."],
       policySpec: ["권한, 승인, 예외, 조건, 로그 관점을 테이블에 반영한다."],
       userFlow: ["메뉴 구조뿐 아니라 사용자 역할별 주요 경로를 포함한다."],
-      flowChart: ["업무 절차, 분기, 실패, 재시도, 완료 경로를 반드시 표현한다."]
+      flowChart: ["업무 절차, 분기, 실패, 재시도, 완료 경로를 반드시 표현한다."],
+      screenSpec: [
+        "이미지와 설명 영역의 번호 매핑을 명확히 유지한다.",
+        "기능정의는 실제 구현/운영 검토가 가능한 수준으로 구체화한다.",
+        "정책서와 유저플로우의 용어, 상태, 경로와 충돌하지 않게 작성한다.",
+        "수정 로그와 관련 화면 연결을 포함한다."
+      ]
     };
 
     return ["품질 규칙:", ...commonRules, ...stageRules[artifactKey]].map((line) => `- ${line}`).join("\n");
@@ -356,7 +414,8 @@ export class LlmService {
       featureSpec: this.buildQualityChecklist("featureSpec", artifacts.featureSpec),
       policySpec: this.buildQualityChecklist("policySpec", artifacts.policySpec),
       userFlow: this.buildQualityChecklist("userFlow", artifacts.userFlow),
-      flowChart: this.buildQualityChecklist("flowChart", artifacts.flowChart)
+      flowChart: this.buildQualityChecklist("flowChart", artifacts.flowChart),
+      screenSpec: this.buildQualityChecklist("screenSpec", artifacts.screenSpec)
     };
   }
 
@@ -386,6 +445,13 @@ export class LlmService {
         return [...base, "역할별 진입점과 depth 구조가 표현되었는지 확인"];
       case "flowChart":
         return [...base, "분기, 재처리, 종료 흐름이 연결되었는지 확인"];
+      case "screenSpec":
+        return [
+          ...base,
+          "화면 메타/번호 마커/설명/기능정의/정책 연결/관련 화면/수정 로그가 포함됐는지 확인",
+          "업로드 이미지와 화면 설명의 번호 매핑이 자연스러운지 확인",
+          "정책서와 유저플로우 기준 용어 및 이동 경로가 일관되는지 확인"
+        ];
     }
   }
 
@@ -394,6 +460,7 @@ export class LlmService {
       `${domainType} 도메인 기준으로 핵심 엔터티와 상태 전이를 더 구체화해줘`,
       `이 요청에서 놓친 운영 정책을 ${artifacts.policySpec.title} 기준으로 보강해줘`,
       `${artifacts.userFlow.title}를 관리자/운영자 관점으로 확장해줘`,
+      `${artifacts.screenSpec.title}의 화면 번호와 기능정의를 더 촘촘하게 보강해줘`,
       `${prompt.slice(0, 48)} 관련 예외 흐름과 실패 처리 시나리오를 추가해줘`
     ];
   }
@@ -402,7 +469,8 @@ export class LlmService {
     return [
       `${projectName} 프로젝트는 ${domainType} 도메인 기준의 지식 계층과 최신 요청 "${prompt}"를 반영해 문서를 갱신했습니다.`,
       `현재 PRD는 ${artifacts.prd.sections[0]?.title ?? "목표"}를 기준으로 범위를 정의합니다.`,
-      `기능명세와 정책서는 구현/운영 규칙을 분리했고, 유저플로우와 흐름도는 이를 사용자/업무 절차 관점으로 연결합니다.`
+      `기능명세와 정책서는 구현/운영 규칙을 분리했고, 유저플로우와 흐름도는 이를 사용자/업무 절차 관점으로 연결합니다.`,
+      `화면기획서는 실제 화면 이미지와 기능/정책/이동 흐름을 연결한 리뷰용 문서로 정리합니다.`
     ].join(" ");
   }
 
@@ -420,6 +488,17 @@ export class LlmService {
       .join("\n\n");
   }
 
+  private buildScreenInputSummary(screenInputs: ScreenSpecInput[]) {
+    return screenInputs
+      .map(
+        (screenInput, index) =>
+          `- 화면 ${index + 1}: ${screenInput.screenName} (${screenInput.screenId})${screenInput.route ? ` / ${screenInput.route}` : ""}${
+            screenInput.notes ? ` / 메모: ${screenInput.notes}` : ""
+          }`
+      )
+      .join("\n");
+  }
+
   private buildTemplateDocument(
     artifactKey: ArtifactKey,
     projectName: string,
@@ -427,6 +506,7 @@ export class LlmService {
     prompt: string,
     generatedAt: string,
     currentArtifacts: WorkspaceArtifactSet,
+    screenInputs: ScreenSpecInput[],
     generationDirective?: string
   ): ArtifactDocument {
     switch (artifactKey) {

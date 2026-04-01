@@ -67,4 +67,5 @@ enum ArtifactKind {
   POLICY_SPEC
   USER_FLOW
   FLOW_CHART
+  SCREEN_SPEC
 }

@@ -28,6 +28,7 @@ export class GenerationService {
       projectName: project.name,
       domainType: payload.domainType ?? project.domainType ?? "general",
       prompt: payload.prompt,
+      screenInputs: payload.screenInputs ?? [],
       targetArtifact: payload.targetArtifact,
       currentArtifacts: projectDetail.artifacts,
       recentLogs: projectDetail.logs.slice(0, 8),

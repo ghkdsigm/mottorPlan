@@ -66,14 +66,15 @@ type FallbackProjectState = {
   versions: Record<ArtifactKey, ArtifactVersionSummary[]>;
 };
 
-const artifactKeyOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart"];
+const artifactKeyOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart", "screenSpec"];
 
 const artifactKeyToKind: Record<ArtifactKey, PrismaArtifactKind> = {
   prd: PrismaArtifactKind.PRD,
   featureSpec: PrismaArtifactKind.FEATURE_SPEC,
   policySpec: PrismaArtifactKind.POLICY_SPEC,
   userFlow: PrismaArtifactKind.USER_FLOW,
-  flowChart: PrismaArtifactKind.FLOW_CHART
+  flowChart: PrismaArtifactKind.FLOW_CHART,
+  screenSpec: PrismaArtifactKind.SCREEN_SPEC
 };
 
 const kindToArtifactKey: Record<PrismaArtifactKind, ArtifactKey> = {
@@ -81,7 +82,8 @@ const kindToArtifactKey: Record<PrismaArtifactKind, ArtifactKey> = {
   [PrismaArtifactKind.FEATURE_SPEC]: "featureSpec",
   [PrismaArtifactKind.POLICY_SPEC]: "policySpec",
   [PrismaArtifactKind.USER_FLOW]: "userFlow",
-  [PrismaArtifactKind.FLOW_CHART]: "flowChart"
+  [PrismaArtifactKind.FLOW_CHART]: "flowChart",
+  [PrismaArtifactKind.SCREEN_SPEC]: "screenSpec"
 };
 
 @Injectable()
@@ -408,7 +410,8 @@ export class ProjectsService {
       featureSpec: this.mapArtifactDocument(versions.featureSpec, fallback.featureSpec),
       policySpec: this.mapArtifactDocument(versions.policySpec, fallback.policySpec),
       userFlow: this.mapArtifactDocument(versions.userFlow, fallback.userFlow),
-      flowChart: this.mapArtifactDocument(versions.flowChart, fallback.flowChart)
+      flowChart: this.mapArtifactDocument(versions.flowChart, fallback.flowChart),
+      screenSpec: this.mapArtifactDocument(versions.screenSpec, fallback.screenSpec)
     };
   }
 
@@ -534,7 +537,8 @@ export class ProjectsService {
       featureSpec: createDocument("feature-spec", `${projectName} 기능명세서`),
       policySpec: createDocument("policy-spec", `${projectName} 정책서`),
       userFlow: createDocument("user-flow", `${projectName} 유저플로우`),
-      flowChart: createDocument("flow-chart", `${projectName} 흐름도차트`)
+      flowChart: createDocument("flow-chart", `${projectName} 흐름도차트`),
+      screenSpec: createDocument("screen-spec", `${projectName} 화면기획서`)
     };
   }
 
@@ -557,7 +561,8 @@ export class ProjectsService {
       featureSpec: [],
       policySpec: [],
       userFlow: [],
-      flowChart: []
+      flowChart: [],
+      screenSpec: []
     };
   }
 
@@ -581,6 +586,8 @@ export class ProjectsService {
         return "user-flow";
       case PrismaArtifactKind.FLOW_CHART:
         return "flow-chart";
+      case PrismaArtifactKind.SCREEN_SPEC:
+        return "screen-spec";
     }
   }
 }

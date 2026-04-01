@@ -1,5 +1,47 @@
-import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { Type } from "class-transformer";
+import { ArrayMaxSize, IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from "class-validator";
 import type { ArtifactKey } from "@mottor-plan/shared";
+
+class ScreenInputDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  screenId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  screenName!: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  route?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  systemName?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  author?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(1000)
+  notes?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  imageName?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  imageDataUrl!: string;
+}
 
 export class GenerateArtifactsDto {
   @IsString()
@@ -18,7 +60,7 @@ export class GenerateArtifactsDto {
   prompt!: string;
 
   @IsOptional()
-  @IsIn(["prd", "featureSpec", "policySpec", "userFlow", "flowChart"] satisfies ArtifactKey[])
+  @IsIn(["prd", "featureSpec", "policySpec", "userFlow", "flowChart", "screenSpec"] satisfies ArtifactKey[])
   targetArtifact?: ArtifactKey;
 
   @IsString()
@@ -26,4 +68,11 @@ export class GenerateArtifactsDto {
   @IsNotEmpty()
   @MaxLength(100)
   domainType?: string;
+
+  @IsArray()
+  @IsOptional()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ScreenInputDto)
+  screenInputs?: ScreenInputDto[];
 }
