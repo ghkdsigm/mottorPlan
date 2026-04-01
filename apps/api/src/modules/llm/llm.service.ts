@@ -37,6 +37,7 @@ type GenerationPipelineOutput = {
 };
 
 const artifactOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart", "screenSpec"];
+const baseArtifactOrder: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart"];
 
 @Injectable()
 export class LlmService {
@@ -45,10 +46,11 @@ export class LlmService {
   async generateProjectArtifacts(input: GenerationPipelineInput): Promise<GenerationPipelineOutput> {
     const workingArtifacts: WorkspaceArtifactSet = { ...input.currentArtifacts };
     const generatedAt = new Date().toISOString();
-    const startIndex = this.resolveStartIndex(input.targetArtifact, input.currentArtifacts);
+    const generationOrder = input.targetArtifact === "screenSpec" ? artifactOrder : baseArtifactOrder;
+    const startIndex = this.resolveStartIndex(input.targetArtifact, input.currentArtifacts, generationOrder);
 
-    for (let index = 0; index < artifactOrder.length; index += 1) {
-      const artifactKey = artifactOrder[index];
+    for (let index = 0; index < generationOrder.length; index += 1) {
+      const artifactKey = generationOrder[index];
       const shouldRegenerate = index >= startIndex;
 
       if (!shouldRegenerate && this.isGeneratedDocument(workingArtifacts[artifactKey])) {
@@ -70,7 +72,7 @@ export class LlmService {
       workingArtifacts[artifactKey] = generatedDocument;
     }
 
-    if (startIndex === 0) {
+    if (startIndex === 0 && generationOrder.includes("prd")) {
       workingArtifacts.prd = await this.refinePrdDocument({
         generatedAt,
         projectName: input.projectName,
@@ -269,10 +271,11 @@ export class LlmService {
     supportingArtifactsSummary?: string;
     generationDirective?: string;
   }) {
-    const previousArtifacts = this.buildArtifactSummaryList(
-      artifactOrder.slice(0, artifactOrder.indexOf(input.artifactKey)),
-      input.currentArtifacts
-    );
+    const previousArtifactKeys =
+      input.artifactKey === "screenSpec"
+        ? artifactOrder.slice(0, artifactOrder.indexOf("screenSpec"))
+        : baseArtifactOrder.slice(0, baseArtifactOrder.indexOf(input.artifactKey));
+    const previousArtifacts = this.buildArtifactSummaryList(previousArtifactKeys, input.currentArtifacts);
 
     const recentLogs = input.recentLogs
       .slice(0, 5)
@@ -389,14 +392,18 @@ export class LlmService {
     return ["품질 규칙:", ...commonRules, ...stageRules[artifactKey]].map((line) => `- ${line}`).join("\n");
   }
 
-  private resolveStartIndex(targetArtifact: ArtifactKey | undefined, currentArtifacts: WorkspaceArtifactSet) {
+  private resolveStartIndex(
+    targetArtifact: ArtifactKey | undefined,
+    currentArtifacts: WorkspaceArtifactSet,
+    order: ArtifactKey[]
+  ) {
     if (!targetArtifact) {
       return 0;
     }
 
-    const requestedIndex = artifactOrder.indexOf(targetArtifact);
+    const requestedIndex = order.indexOf(targetArtifact);
     for (let index = 0; index < requestedIndex; index += 1) {
-      if (!this.isGeneratedDocument(currentArtifacts[artifactOrder[index]])) {
+      if (!this.isGeneratedDocument(currentArtifacts[order[index]])) {
         return 0;
       }
     }
@@ -523,7 +530,10 @@ export class LlmService {
             : "유저플로우는 사용자 여정과 진입 경로를 구체화합니다.",
           this.isGeneratedDocument(currentArtifacts.flowChart)
             ? `${currentArtifacts.flowChart.title}에서 실제 업무 절차와 분기 흐름을 참고합니다.`
-            : "흐름도차트는 실제 운영 절차와 분기 조건을 정리합니다."
+            : "흐름도차트는 실제 운영 절차와 분기 조건을 정리합니다.",
+          this.isGeneratedDocument(currentArtifacts.screenSpec)
+            ? `${currentArtifacts.screenSpec.title}에서 실제 화면 기준 설명과 기능정의를 참고합니다.`
+            : "화면기획서는 실제 화면 이미지 기준 리뷰 문서로 이어집니다."
         ];
 
         return this.createDocument("prd", `${projectName} PRD`, generatedAt, [
@@ -588,7 +598,7 @@ export class LlmService {
             summary: "제품에서 이 기능이 어떤 모습으로 제공될지 설명합니다.",
             bullets: [
               "핵심 기능: 프로젝트 생성/불러오기, 문서 순차 생성, 문서별 재생성, 버전/로그 저장",
-              "산출물 범위: PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트",
+              "산출물 범위: PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트, 화면기획서",
               "운영 요구사항: 권한, 예외 처리, 변경 이력, 검토 근거를 문서에 반영해야 합니다.",
               ...downstreamReferences
             ]
@@ -718,6 +728,42 @@ export class LlmService {
           ],
           this.buildFlowChartVisualization(projectName)
         );
+      case "screenSpec":
+        return this.createDocument(
+          "screen-spec",
+          `${projectName} 화면기획서`,
+          generatedAt,
+          [
+            {
+              title: "화면기획 개요",
+              summary: `${projectName} 프로젝트의 핵심 화면을 기준으로 화면 설명, 기능 정의, 정책 연결, 이동 흐름을 정리합니다.`,
+              bullets: [
+                "실제 이미지 기준의 화면 설명과 번호 마커를 제공합니다.",
+                `${currentArtifacts.featureSpec.title}와 ${currentArtifacts.policySpec.title}의 요구사항을 화면 단위로 연결합니다.`,
+                `${screenInputs.length > 0 ? `${screenInputs.length}개의 업로드 화면을 기준으로` : "현재 입력된 정보 기준으로"} 리뷰 문서를 구성합니다.`
+              ]
+            },
+            {
+              title: "검토 포인트",
+              summary: "디자인 시안 리뷰가 아니라 PM/개발/QA가 함께 보는 화면정의서 기준으로 구성합니다.",
+              bullets: [
+                "영역별 설명과 기능 정의가 일치하는지 확인합니다.",
+                "정책, 예외, 이동 경로가 다른 산출물과 충돌하지 않는지 확인합니다.",
+                "수정 로그와 관련 화면 링크를 통해 커뮤니케이션 이력을 추적합니다."
+              ]
+            },
+            {
+              title: "활용 방법",
+              summary: "기획 리뷰, 개발 핸드오프, QA 케이스 설계에 직접 활용할 수 있습니다.",
+              bullets: [
+                "기획자는 화면별 누락 영역을 빠르게 점검합니다.",
+                "개발자는 기능정의와 정책 연결 항목을 구현 체크리스트로 사용합니다.",
+                "QA는 이동 흐름과 예외 케이스를 테스트 시나리오로 확장합니다."
+              ]
+            }
+          ],
+          this.buildScreenSpecVisualization(projectName, prompt, currentArtifacts, screenInputs)
+        );
     }
   }
 
@@ -778,6 +824,156 @@ export class LlmService {
     ];
 
     return resolved.map((line) => `- ${line}`).join("\n");
+  }
+
+  private buildScreenSpecVisualization(
+    projectName: string,
+    prompt: string,
+    currentArtifacts: WorkspaceArtifactSet,
+    screenInputs: ScreenSpecInput[]
+  ): ScreenSpecVisualization {
+    const policyVisualization =
+      currentArtifacts.policySpec.visualization?.type === "policy-table" ? currentArtifacts.policySpec.visualization : null;
+
+    const screens =
+      screenInputs.length > 0
+        ? screenInputs.map((screenInput, index) => ({
+            id: `screen-${index + 1}`,
+            screenId: screenInput.screenId,
+            screenName: screenInput.screenName,
+            route: screenInput.route,
+            systemName: screenInput.systemName ?? projectName,
+            author: screenInput.author ?? "AI Planner",
+            createdDate: new Date().toISOString().slice(0, 10),
+            imageDataUrl: screenInput.imageDataUrl,
+            imageName: screenInput.imageName,
+            notes: screenInput.notes,
+            markers: [
+              { id: `${screenInput.screenId}-marker-1`, number: 1, x: 8, y: 16, title: "헤더", description: "화면 제목, 액션, 보조 버튼이 배치되는 영역" },
+              { id: `${screenInput.screenId}-marker-2`, number: 2, x: 14, y: 42, title: "핵심 콘텐츠", description: "사용자가 가장 자주 확인하거나 입력하는 주요 콘텐츠 영역" },
+              { id: `${screenInput.screenId}-marker-3`, number: 3, x: 78, y: 82, title: "보조 액션", description: "저장, 이동, 필터, 상세 확인 등 후속 액션 영역" }
+            ],
+            descriptionSections: [
+              {
+                id: `${screenInput.screenId}-desc-1`,
+                title: "화면 설명",
+                bullets: [
+                  `${screenInput.screenName} 화면은 ${prompt} 요구를 실제 사용자가 확인하는 대표 화면입니다.`,
+                  `${currentArtifacts.userFlow.title}의 이동 흐름과 ${currentArtifacts.flowChart.title}의 처리 절차를 화면 단위로 연결합니다.`,
+                  screenInput.notes ? `추가 메모: ${screenInput.notes}` : "업로드 이미지 기준으로 핵심 영역을 번호와 함께 설명합니다."
+                ]
+              },
+              {
+                id: `${screenInput.screenId}-desc-2`,
+                title: "화면 검토 포인트",
+                bullets: [
+                  "화면 번호와 기능정의가 일치해야 합니다.",
+                  "버튼/탭/입력 요소의 상태 변화와 예외 처리 노출 여부를 확인합니다.",
+                  "정책서 기준 권한/조건/예외와 충돌하지 않도록 검토합니다."
+                ]
+              }
+            ],
+            functionalRequirements: [
+              {
+                id: `${screenInput.screenId}-func-1`,
+                no: 1,
+                title: `${screenInput.screenName} 진입 및 기본 노출`,
+                description: "화면 진입 시 기본 정보, 상태값, 헤더 요소를 즉시 확인할 수 있어야 합니다."
+              },
+              {
+                id: `${screenInput.screenId}-func-2`,
+                no: 2,
+                title: "핵심 액션 수행",
+                description: "주요 CTA, 조회, 입력, 상세 이동 등 핵심 액션을 한 화면에서 수행할 수 있어야 합니다."
+              },
+              {
+                id: `${screenInput.screenId}-func-3`,
+                no: 3,
+                title: "예외 및 후속 처리",
+                description: "오류, 빈 상태, 제한 상태, 추가 이동 경로가 사용자에게 명확히 안내되어야 합니다."
+              }
+            ],
+            policyReferences: (policyVisualization?.rows ?? []).slice(0, 3).map((row, rowIndex) => ({
+              id: `${screenInput.screenId}-policy-${rowIndex + 1}`,
+              policyName:
+                row.values.policyName ??
+                row.values.rule ??
+                row.values.condition ??
+                `정책 ${rowIndex + 1}`,
+              summary:
+                row.values.definition ??
+                row.values.rule ??
+                row.values.note ??
+                "화면 동작과 연결되는 정책 정의"
+            })),
+            relatedScreens: screenInputs
+              .filter((candidate) => candidate.screenId !== screenInput.screenId)
+              .slice(0, 3)
+              .map((candidate, candidateIndex) => ({
+                id: `${screenInput.screenId}-link-${candidateIndex + 1}`,
+                label: candidate.screenName,
+                targetScreenId: candidate.screenId,
+                description: candidate.route ? `${candidate.route} 경로로 이동` : "연관 화면"
+              })),
+            changeLog: [
+              {
+                id: `${screenInput.screenId}-change-1`,
+                date: new Date().toISOString().slice(0, 10),
+                description: "초기 화면기획서 자동 생성"
+              }
+            ]
+          }))
+        : [
+            {
+              id: "screen-1",
+              screenId: "screen-01",
+              screenName: `${projectName} 대표 화면`,
+              route: "/",
+              systemName: projectName,
+              author: "AI Planner",
+              createdDate: new Date().toISOString().slice(0, 10),
+              imageDataUrl:
+                "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1280' height='720' viewBox='0 0 1280 720'%3E%3Crect width='1280' height='720' fill='%23f8fbf8'/%3E%3Crect x='56' y='56' width='1168' height='92' rx='16' fill='%23ffffff' stroke='%23d9ded9'/%3E%3Crect x='56' y='184' width='760' height='460' rx='20' fill='%23ffffff' stroke='%23d9ded9'/%3E%3Crect x='848' y='184' width='376' height='460' rx='20' fill='%23ffffff' stroke='%23d9ded9'/%3E%3Ctext x='96' y='110' fill='%23262626' font-size='32' font-family='Arial'%3E화면 시안을 업로드하면 실제 이미지 기반으로 화면기획서를 생성합니다.%3C/text%3E%3Ctext x='96' y='244' fill='%23777777' font-size='24' font-family='Arial'%3E현재는 대표 레이아웃 placeholder 입니다.%3C/text%3E%3C/svg%3E",
+              notes: "화면 이미지를 업로드하면 실제 UI 기준으로 다시 생성됩니다.",
+              markers: [
+                { id: "screen-01-marker-1", number: 1, x: 10, y: 12, title: "헤더", description: "시스템명, 화면명, 주요 액션이 들어가는 영역" },
+                { id: "screen-01-marker-2", number: 2, x: 18, y: 42, title: "메인 콘텐츠", description: "핵심 기능 또는 데이터가 배치되는 영역" }
+              ],
+              descriptionSections: [
+                {
+                  id: "screen-01-desc-1",
+                  title: "화면 설명",
+                  bullets: [
+                    `${projectName} 프로젝트의 대표 화면 정의서 placeholder 입니다.`,
+                    "실제 이미지 업로드가 없으면 문서와 정책 기준으로 기본 템플릿을 생성합니다."
+                  ]
+                }
+              ],
+              functionalRequirements: [
+                {
+                  id: "screen-01-func-1",
+                  no: 1,
+                  title: "대표 화면 구성",
+                  description: "핵심 정보와 주요 액션을 한 화면에서 검토할 수 있어야 합니다."
+                }
+              ],
+              policyReferences: [],
+              relatedScreens: [],
+              changeLog: [
+                {
+                  id: "screen-01-change-1",
+                  date: new Date().toISOString().slice(0, 10),
+                  description: "placeholder 화면기획서 생성"
+                }
+              ]
+            }
+          ];
+
+    return {
+      type: "screen-spec",
+      title: `${projectName} 화면기획서`,
+      screens
+    };
   }
 
   private createDocument(

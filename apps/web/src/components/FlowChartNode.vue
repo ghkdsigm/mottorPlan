@@ -122,10 +122,10 @@ defineProps<{
 .flow-chart-node--subprocess .flow-chart-node__content {
   border: 1.5px solid #cfd6dc;
   border-radius: 6px;
-  box-shadow:
+  /* box-shadow:
     inset 9px 0 0 rgba(154, 171, 185, 0.18),
     inset -9px 0 0 rgba(154, 171, 185, 0.18),
-    0 10px 24px rgba(12, 58, 39, 0.05);
+    0 10px 24px rgba(12, 58, 39, 0.05); */
 }
 
 .flow-chart-node--decision::before,

@@ -16,6 +16,8 @@ import {
   type PolicyTableVisualization,
   type ProjectDetail,
   type ProjectSummary,
+  type ScreenSpecInput,
+  type ScreenSpecVisualization,
   type TreeMapNode,
   type TreeMapVisualization,
   type WorkspaceArtifactSet
@@ -23,11 +25,13 @@ import {
 import { api } from "./services/api";
 import FeatureFlowBoard from "./components/FeatureFlowBoard.vue";
 import FlowChartBoard from "./components/FlowChartBoard.vue";
+import ScreenSpecBoard from "./components/ScreenSpecBoard.vue";
 import UserFlowBoard from "./components/UserFlowBoard.vue";
 
-type TabKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart";
+type TabKey = "prd" | "featureSpec" | "policySpec" | "userFlow" | "flowChart" | "screenSpec";
 type ExportableArtifactKey = keyof WorkspaceArtifactSet;
 type DomainPresetOption = Exclude<DomainPreset, "general" | "custom">;
+const screenSpecBaseKeys: ArtifactKey[] = ["prd", "featureSpec", "policySpec", "userFlow", "flowChart"];
 
 const projectNameInput = ref("홈페이지 리뉴얼 예약 보드");
 const prompt = ref("외부 고객이 한 줄 아이디어만 입력하면 고품질 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 생성해줘");
@@ -43,6 +47,7 @@ const artifactVersions = ref<Record<ArtifactKey, ArtifactVersionSummary[]>>(crea
 const contextSummary = ref("프로젝트를 생성하거나 기존 프로젝트를 불러오면 누적 컨텍스트와 로그가 여기에 쌓입니다.");
 const boardRef = ref<HTMLElement | null>(null);
 const errorMessage = ref("");
+const screenInputs = ref<ScreenSpecInput[]>([]);
 
 const fallbackArtifacts: WorkspaceArtifactSet = {
   prd: {
@@ -453,6 +458,41 @@ const fallbackArtifacts: WorkspaceArtifactSet = {
         { from: "skip-notify", to: "end" }
       ]
     }
+  },
+  screenSpec: {
+    kind: "screen-spec",
+    title: "화면기획서",
+    version: "v1.0",
+    generatedAt: new Date().toISOString(),
+    sections: [
+      {
+        title: "화면기획 목적",
+        summary: "업로드한 화면 이미지와 기존 산출물을 연결해 화면정의서를 생성합니다.",
+        bullets: [
+          "메타 정보, 번호 마커, 기능 정의, 정책 연결, 관련 화면, 수정 로그를 함께 제공합니다.",
+          "PRD와 기능명세서, 정책서, 유저플로우, 흐름도차트의 내용을 화면 단위로 재정렬합니다.",
+          "대기업 PM 수준의 리뷰/핸드오프 문서 형태를 기본으로 사용합니다."
+        ]
+      },
+      {
+        title: "활용 방식",
+        summary: "기획 리뷰, 개발 핸드오프, QA 시나리오 작성에 바로 활용할 수 있습니다.",
+        bullets: [
+          "화면별 핵심 영역을 번호 마커로 설명합니다.",
+          "기능 정의와 정책 연결을 하단 표 형식으로 제공합니다.",
+          "수정 로그와 연결 화면을 통해 협업 히스토리를 정리합니다."
+        ]
+      },
+      {
+        title: "준비 사항",
+        summary: "좌측 패널에서 화면 ID/이름/경로/이미지를 입력하면 해당 정보를 생성 프롬프트에 포함합니다.",
+        bullets: [
+          "이미지가 없으면 placeholder 기반 초안을 생성합니다.",
+          "여러 화면을 함께 업로드하면 다장 형태의 화면기획서가 생성됩니다.",
+          "같은 프로젝트에서 후속 요청으로 화면기획서를 계속 개선할 수 있습니다."
+        ]
+      }
+    ]
   }
 };
 
@@ -462,7 +502,21 @@ function createEmptyVersionMap(): Record<ArtifactKey, ArtifactVersionSummary[]> 
     featureSpec: [],
     policySpec: [],
     userFlow: [],
-    flowChart: []
+    flowChart: [],
+    screenSpec: []
+  };
+}
+
+function createEmptyScreenInput(index = 1): ScreenSpecInput {
+  return {
+    screenId: `screen-${String(index).padStart(2, "0")}`,
+    screenName: "",
+    route: "",
+    systemName: "",
+    author: "",
+    notes: "",
+    imageName: "",
+    imageDataUrl: ""
   };
 }
 
@@ -523,6 +577,83 @@ function syncDomainSelection(domainType?: string) {
   customDomainType.value = normalized;
 }
 
+function syncScreenInputsFromArtifacts(nextArtifacts: WorkspaceArtifactSet) {
+  const visualization = nextArtifacts.screenSpec.visualization;
+  if (visualization?.type !== "screen-spec") {
+    screenInputs.value = [];
+    return;
+  }
+
+  screenInputs.value = visualization.screens.map((screen, index) => ({
+    screenId: screen.screenId || `screen-${String(index + 1).padStart(2, "0")}`,
+    screenName: screen.screenName,
+    route: screen.route ?? "",
+    systemName: screen.systemName ?? "",
+    author: screen.author ?? "",
+    notes: screen.notes ?? "",
+    imageName: screen.imageName ?? "",
+    imageDataUrl: screen.imageDataUrl ?? ""
+  }));
+}
+
+function addScreenInput() {
+  screenInputs.value = [...screenInputs.value, createEmptyScreenInput(screenInputs.value.length + 1)];
+}
+
+function removeScreenInput(index: number) {
+  screenInputs.value = screenInputs.value.filter((_, currentIndex) => currentIndex !== index);
+}
+
+async function handleScreenImageUpload(event: Event, index: number) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  screenInputs.value[index] = {
+    ...screenInputs.value[index],
+    imageName: file.name,
+    imageDataUrl: dataUrl
+  };
+}
+
+function buildScreenInputsPayload() {
+  const trimmed = screenInputs.value
+    .map((screenInput, index) => ({
+      ...screenInput,
+      screenId: screenInput.screenId.trim() || `screen-${String(index + 1).padStart(2, "0")}`,
+      screenName: screenInput.screenName.trim(),
+      route: screenInput.route?.trim() || undefined,
+      systemName: screenInput.systemName?.trim() || undefined,
+      author: screenInput.author?.trim() || undefined,
+      notes: screenInput.notes?.trim() || undefined,
+      imageName: screenInput.imageName?.trim() || undefined,
+      imageDataUrl: screenInput.imageDataUrl?.trim() || ""
+    }))
+    .filter((screenInput) => screenInput.screenName || screenInput.imageDataUrl || screenInput.notes || screenInput.route);
+
+  const invalid = trimmed.find((screenInput) => !screenInput.screenName || !screenInput.imageDataUrl);
+  if (invalid) {
+    return {
+      error: "화면기획서용 화면은 이름과 이미지를 함께 입력해 주세요.",
+      payload: [] as ScreenSpecInput[]
+    };
+  }
+
+  return {
+    error: "",
+    payload: trimmed
+  };
+}
+
 const selectedDomainLabel = computed(() => {
   if (selectedDomainPreset.value === "custom") {
     return customDomainType.value.trim() || "직접입력";
@@ -540,10 +671,11 @@ const suggestedActions = ref<string[]>([
 
 const tabItems: Array<{ key: TabKey; label: string }> = [
   { key: "prd", label: "PRD" },
-  { key: "featureSpec", label: "기능명세서/요구사항정의서" },
-  { key: "policySpec", label: "정책서" },
   { key: "userFlow", label: "유저플로우" },
-  { key: "flowChart", label: "흐름도차트" }
+  { key: "flowChart", label: "흐름도차트" },
+  { key: "policySpec", label: "정책서" },
+  { key: "featureSpec", label: "기능명세서" },
+  { key: "screenSpec", label: "화면기획서" }
 ];
 
 const currentDocument = computed<ArtifactDocument>(() => artifacts.value[activeTab.value]);
@@ -566,6 +698,44 @@ const policyTableVisualization = computed<PolicyTableVisualization | null>(() =>
 const flowChartVisualization = computed<FlowChartVisualization | null>(() => {
   const visualization = currentDocument.value.visualization;
   return visualization?.type === "flow-chart" ? visualization : null;
+});
+
+const screenSpecVisualization = computed<ScreenSpecVisualization | null>(() => {
+  const visualization = currentDocument.value.visualization;
+  return visualization?.type === "screen-spec" ? visualization : null;
+});
+
+const canGenerateScreenSpec = computed(() => {
+  if (!currentProject.value) {
+    return false;
+  }
+
+  return screenSpecBaseKeys.every(
+    (key) =>
+      artifactVersions.value[key].length > 0 ||
+      artifacts.value[key].generatedAt !== fallbackArtifacts[key].generatedAt ||
+      artifacts.value[key].version === "draft"
+  );
+});
+
+const primaryGenerateButtonLabel = computed(() => {
+  if (isGenerating.value) {
+    return activeTab.value === "screenSpec" ? "화면기획서 생성 중..." : "문서 생성 중...";
+  }
+
+  return activeTab.value === "screenSpec" ? "화면기획서 생성" : "문서 생성";
+});
+
+const primaryGenerateDisabled = computed(() => {
+  if (isGenerating.value) {
+    return true;
+  }
+
+  if (activeTab.value === "screenSpec") {
+    return !canGenerateScreenSpec.value;
+  }
+
+  return false;
 });
 
 function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse {
@@ -621,6 +791,11 @@ function buildFallbackResponse(targetArtifact?: ArtifactKey): GenerationResponse
         ...fallbackArtifacts.flowChart,
         title: `${title || project.name} 흐름도차트`,
         generatedAt: now
+      },
+      screenSpec: {
+        ...fallbackArtifacts.screenSpec,
+        title: `${title || project.name} 화면기획서`,
+        generatedAt: now
       }
     },
     suggestedActions: suggestedActions.value,
@@ -635,6 +810,7 @@ function hydrateProjectDetail(detail: ProjectDetail | GenerationResponse) {
   projectNameInput.value = detail.project.name;
   syncDomainSelection(detail.project.domainType);
   artifacts.value = detail.artifacts;
+  syncScreenInputsFromArtifacts(detail.artifacts);
   suggestedActions.value = detail.suggestedActions;
   projectLogs.value = detail.logs;
   artifactVersions.value = detail.versions;
@@ -695,6 +871,7 @@ async function createProject() {
     const project = await api.createProject({ name, domainType });
     currentProject.value = project;
     artifacts.value = fallbackArtifacts;
+    screenInputs.value = [];
     suggestedActions.value = [
       "핵심 사용자를 3개로 나눠줘",
       "운영 정책을 먼저 정의해줘",
@@ -711,11 +888,13 @@ async function createProject() {
     projectLogs.value = [];
     artifactVersions.value = createEmptyVersionMap();
     contextSummary.value = `${project.name} 프로젝트를 ${project.domainType} 도메인 기준 로컬 상태로 생성했습니다.`;
+    screenInputs.value = [];
   }
 }
 
 async function generateArtifacts(targetArtifact?: ArtifactKey) {
   const domainType = resolveDomainType();
+  const screenInputPayload = buildScreenInputsPayload();
   if (!prompt.value.trim()) {
     errorMessage.value = "아이디어를 한 줄 이상 입력해 주세요.";
     return;
@@ -731,6 +910,16 @@ async function generateArtifacts(targetArtifact?: ArtifactKey) {
     return;
   }
 
+  if (targetArtifact === "screenSpec" && !canGenerateScreenSpec.value) {
+    errorMessage.value = "먼저 PRD, 기능명세서, 정책서, 유저플로우, 흐름도차트를 생성해 주세요.";
+    return;
+  }
+
+  if (screenInputPayload.error) {
+    errorMessage.value = screenInputPayload.error;
+    return;
+  }
+
   isGenerating.value = true;
   errorMessage.value = "";
 
@@ -739,7 +928,8 @@ async function generateArtifacts(targetArtifact?: ArtifactKey) {
       projectId: currentProject.value.id,
       prompt: prompt.value,
       targetArtifact,
-      domainType
+      domainType,
+      screenInputs: screenInputPayload.payload
     });
     hydrateProjectDetail(response);
     await loadProjects();
@@ -808,6 +998,30 @@ function formatVisualization(document: ArtifactDocument) {
       ...visualization.edges.map((edge) => `- ${edge.from} -> ${edge.to}${edge.label ? ` (${edge.label})` : ""}`),
       ""
     ];
+  }
+
+  if (visualization.type === "screen-spec") {
+    return visualization.screens.flatMap((screen) => [
+      `## ${screen.screenName} (${screen.screenId})`,
+      "",
+      `- 경로: ${screen.route ?? "-"}`,
+      `- 작성자: ${screen.author ?? "-"}`,
+      `- 작성일: ${screen.createdDate ?? "-"}`,
+      "",
+      "### 번호 마커",
+      "",
+      ...screen.markers.map(
+        (marker) =>
+          `- ${marker.number}. ${marker.title} (${marker.x}%, ${marker.y}%): ${marker.description ?? ""}`
+      ),
+      "",
+      "### 기능 정의",
+      "",
+      ...screen.functionalRequirements.map(
+        (requirement) => `- ${requirement.no}. ${requirement.title}: ${requirement.description}`
+      ),
+      ""
+    ]);
   }
 
   function walkTree(node: TreeMapNode, depth = 0): string[] {
@@ -1098,6 +1312,145 @@ function renderTreeMapHtml(visualization: TreeMapVisualization) {
   `;
 }
 
+function renderScreenSpecHtml(visualization: ScreenSpecVisualization) {
+  return `
+    <section class="visual-section">
+      <div class="visual-section__header">
+        <div>
+          <span class="label">추가 시각화</span>
+          <h2>${escapeHtml(visualization.title)}</h2>
+        </div>
+      </div>
+      <div class="screen-spec-export">
+        ${visualization.screens
+          .map(
+            (screen) => `
+              <article class="screen-spec-export__sheet">
+                <div class="screen-spec-export__meta">
+                  <div class="screen-spec-export__meta-item"><span>시스템명</span><strong>${escapeHtml(screen.systemName ?? "-")}</strong></div>
+                  <div class="screen-spec-export__meta-item"><span>화면 ID</span><strong>${escapeHtml(screen.screenId)}</strong></div>
+                  <div class="screen-spec-export__meta-item"><span>화면명</span><strong>${escapeHtml(screen.screenName)}</strong></div>
+                  <div class="screen-spec-export__meta-item"><span>경로</span><strong>${escapeHtml(screen.route ?? "-")}</strong></div>
+                  <div class="screen-spec-export__meta-item"><span>작성자</span><strong>${escapeHtml(screen.author ?? "-")}</strong></div>
+                  <div class="screen-spec-export__meta-item"><span>작성일</span><strong>${escapeHtml(screen.createdDate ?? "-")}</strong></div>
+                </div>
+                <div class="screen-spec-export__layout">
+                  <section class="screen-spec-export__image-panel">
+                    <div class="screen-spec-export__image-wrap">
+                      <img src="${escapeHtml(screen.imageDataUrl)}" alt="${escapeHtml(screen.screenName)}" class="screen-spec-export__image" />
+                      ${screen.markers
+                        .map(
+                          (marker) => `
+                            <span class="screen-spec-export__marker" style="left:${marker.x}%; top:${marker.y}%;">${marker.number}</span>
+                          `
+                        )
+                        .join("")}
+                    </div>
+                  </section>
+                  <section class="screen-spec-export__side">
+                    ${screen.markers
+                      .map(
+                        (marker) => `
+                          <article class="screen-spec-export__card">
+                            <strong>${marker.number}. ${escapeHtml(marker.title)}</strong>
+                            <p>${escapeHtml(marker.description ?? "-")}</p>
+                          </article>
+                        `
+                      )
+                      .join("")}
+                    ${screen.descriptionSections
+                      .map(
+                        (section) => `
+                          <article class="screen-spec-export__card">
+                            <strong>${escapeHtml(section.title)}</strong>
+                            <ul>${section.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>
+                          </article>
+                        `
+                      )
+                      .join("")}
+                  </section>
+                </div>
+                <div class="screen-spec-export__tables">
+                  <table class="screen-spec-export__table">
+                    <thead><tr><th>No</th><th>기능명</th><th>설명</th></tr></thead>
+                    <tbody>
+                      ${screen.functionalRequirements
+                        .map(
+                          (requirement) => `
+                            <tr>
+                              <td>${requirement.no}</td>
+                              <td>${escapeHtml(requirement.title)}</td>
+                              <td>${escapeHtml(requirement.description)}</td>
+                            </tr>
+                          `
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>
+                  <table class="screen-spec-export__table">
+                    <thead><tr><th>정책명</th><th>설명</th></tr></thead>
+                    <tbody>
+                      ${
+                        screen.policyReferences.length
+                          ? screen.policyReferences
+                              .map(
+                                (policy) => `
+                                  <tr>
+                                    <td>${escapeHtml(policy.policyName)}</td>
+                                    <td>${escapeHtml(policy.summary)}</td>
+                                  </tr>
+                                `
+                              )
+                              .join("")
+                          : '<tr><td colspan="2">연결된 정책이 없습니다.</td></tr>'
+                      }
+                    </tbody>
+                  </table>
+                  <table class="screen-spec-export__table">
+                    <thead><tr><th>화면명</th><th>대상 ID</th><th>설명</th></tr></thead>
+                    <tbody>
+                      ${
+                        screen.relatedScreens.length
+                          ? screen.relatedScreens
+                              .map(
+                                (link) => `
+                                  <tr>
+                                    <td>${escapeHtml(link.label)}</td>
+                                    <td>${escapeHtml(link.targetScreenId ?? "-")}</td>
+                                    <td>${escapeHtml(link.description ?? "-")}</td>
+                                  </tr>
+                                `
+                              )
+                              .join("")
+                          : '<tr><td colspan="3">연결된 화면이 없습니다.</td></tr>'
+                      }
+                    </tbody>
+                  </table>
+                  <table class="screen-spec-export__table">
+                    <thead><tr><th>일자</th><th>내용</th></tr></thead>
+                    <tbody>
+                      ${screen.changeLog
+                        .map(
+                          (log) => `
+                            <tr>
+                              <td>${escapeHtml(log.date)}</td>
+                              <td>${escapeHtml(log.description)}</td>
+                            </tr>
+                          `
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderVisualizationHtml(document: ArtifactDocument) {
   const visualization = document.visualization;
 
@@ -1115,6 +1468,10 @@ function renderVisualizationHtml(document: ArtifactDocument) {
 
   if (visualization.type === "flow-chart") {
     return renderFlowChartHtml(visualization);
+  }
+
+  if (visualization.type === "screen-spec") {
+    return renderScreenSpecHtml(visualization);
   }
 
   return renderTreeMapHtml(visualization);
@@ -1198,6 +1555,26 @@ function buildStandaloneHtml(document: ArtifactDocument) {
     .tree-node--primary { border: 1px solid rgba(111,77,241,0.25); color: #5b34d2; background: rgba(111,77,241,0.06); }
     .tree-node--secondary { border: 1px solid rgba(0,105,77,0.25); color: #00694d; background: rgba(0,105,77,0.06); }
     .tree-node--neutral { border: 1px solid rgba(194,214,190,0.9); color: #33423a; }
+    .screen-spec-export { display: flex; flex-direction: column; gap: 24px; }
+    .screen-spec-export__sheet { padding: 22px; border: 1px solid #dfe6de; border-radius: 20px; background: #ffffff; }
+    .screen-spec-export__meta { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; margin-bottom: 18px; }
+    .screen-spec-export__meta-item { padding: 12px; border: 1px solid #edf1ec; border-radius: 12px; background: #fbfbfb; }
+    .screen-spec-export__meta-item span { display: block; margin-bottom: 6px; color: #777777; font-size: 12px; }
+    .screen-spec-export__meta-item strong { color: #262626; font-size: 13px; }
+    .screen-spec-export__layout { display: grid; grid-template-columns: minmax(0,1.2fr) minmax(320px,0.8fr); gap: 18px; margin-bottom: 18px; }
+    .screen-spec-export__image-panel, .screen-spec-export__side { padding: 16px; border: 1px solid #edf1ec; border-radius: 16px; background: #ffffff; }
+    .screen-spec-export__image-wrap { position: relative; overflow: hidden; border-radius: 14px; border: 1px solid #dfe6de; background: #f8fbf8; }
+    .screen-spec-export__image { display: block; width: 100%; height: auto; }
+    .screen-spec-export__marker { position: absolute; width: 28px; height: 28px; border-radius: 999px; background: #00694d; color: #ffffff; font-size: 12px; font-weight: 700; line-height: 28px; text-align: center; transform: translate(-50%, -50%); }
+    .screen-spec-export__side { display: flex; flex-direction: column; gap: 12px; }
+    .screen-spec-export__card { padding: 14px; border: 1px solid #edf1ec; border-radius: 14px; background: #fbfbfb; }
+    .screen-spec-export__card strong { display: block; margin-bottom: 8px; font-size: 13px; }
+    .screen-spec-export__card p, .screen-spec-export__card li { color: #5f5f5f; font-size: 12px; line-height: 1.5; }
+    .screen-spec-export__card ul { margin: 0; padding-left: 18px; }
+    .screen-spec-export__tables { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+    .screen-spec-export__table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .screen-spec-export__table th, .screen-spec-export__table td { padding: 10px 12px; border-bottom: 1px solid #edf1ec; text-align: left; vertical-align: top; line-height: 1.5; }
+    .screen-spec-export__table th { background: #f3f7f3; color: #33423a; }
   `;
 
   return `<!doctype html>
@@ -1220,7 +1597,8 @@ function getExportDocuments(): Array<{ key: ExportableArtifactKey; filename: str
     { key: "featureSpec", filename: "02-feature-spec.html", document: artifacts.value.featureSpec },
     { key: "policySpec", filename: "03-policy-spec.html", document: artifacts.value.policySpec },
     { key: "userFlow", filename: "04-user-flow.html", document: artifacts.value.userFlow },
-    { key: "flowChart", filename: "05-flow-chart.html", document: artifacts.value.flowChart }
+    { key: "flowChart", filename: "05-flow-chart.html", document: artifacts.value.flowChart },
+    { key: "screenSpec", filename: "06-screen-spec.html", document: artifacts.value.screenSpec }
   ];
 }
 
@@ -1253,7 +1631,7 @@ onMounted(() => {
       <div class="brand">
         <div class="brand__mark">MP</div>
         <div>
-          <strong>Mottor Plan Studio</strong>
+          <strong>Momos Plan Studio</strong>
           <p>AI 기반 기획 산출물 워크스페이스</p>
         </div>
       </div>
@@ -1273,8 +1651,8 @@ onMounted(() => {
         <button class="secondary-button" @click="createProject">+ 새 프로젝트</button>
         <button class="secondary-button" @click="isHistoryOpen = !isHistoryOpen">기존 프로젝트 불러오기</button>
         <button class="avatar-group" @click="isHistoryOpen = !isHistoryOpen">
-          <span />
-          <span />
+          <!-- <span />
+          <span /> -->
           <span />
         </button>
       </div>
@@ -1304,7 +1682,7 @@ onMounted(() => {
         </div>
 
         <div class="chat-panel__hint">
-          프로젝트별로 PRD·기능명세서·정책서·유저플로우·흐름도차트를 누적 저장하고, 이후 요청으로 계속 개선할 수 있습니다.
+          프로젝트별로 PRD·기능명세서·정책서·유저플로우·흐름도차트·화면기획서를 누적 저장하고, 이후 요청으로 계속 개선할 수 있습니다.
         </div>
 
         <section class="chat-panel__card">
@@ -1327,10 +1705,60 @@ onMounted(() => {
             />
             <p class="domain-caption">선택된 도메인 기준으로 지식 계층을 구성해 PRD부터 흐름도까지 반영합니다.</p>
           </div>
+          <div class="screen-inputs">
+            <div class="screen-inputs__header">
+              <div>
+                <span class="label">화면기획서 입력</span>
+                <p>화면 이미지와 메타를 넣으면 마지막 산출물인 화면기획서에 반영됩니다.</p>
+              </div>
+              <button class="secondary-button" type="button" @click="addScreenInput">+ 화면 추가</button>
+            </div>
+            <div v-if="screenInputs.length === 0" class="screen-inputs__empty">
+              아직 등록된 화면이 없습니다. 필요하면 화면을 추가해 이미지와 메타를 입력해 주세요.
+            </div>
+            <article
+              v-for="(screen, index) in screenInputs"
+              :key="`${screen.screenId}-${index}`"
+              class="screen-input-card"
+            >
+              <div class="screen-input-card__header">
+                <strong>화면 {{ index + 1 }}</strong>
+                <button class="screen-input-card__remove" type="button" @click="removeScreenInput(index)">삭제</button>
+              </div>
+              <div class="screen-input-grid">
+                <input v-model="screenInputs[index].screenId" class="text-input" placeholder="화면 ID" />
+                <input v-model="screenInputs[index].screenName" class="text-input" placeholder="화면명" />
+                <input v-model="screenInputs[index].route" class="text-input" placeholder="경로" />
+                <input v-model="screenInputs[index].systemName" class="text-input" placeholder="시스템명" />
+                <input v-model="screenInputs[index].author" class="text-input" placeholder="작성자" />
+                <input
+                  class="text-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  @change="(event) => handleScreenImageUpload(event, index)"
+                />
+              </div>
+              <textarea
+                v-model="screenInputs[index].notes"
+                class="screen-notes-input"
+                placeholder="화면 설명 메모, 리뷰 포인트, 참고 사항"
+              />
+              <div v-if="screen.imageDataUrl" class="screen-preview">
+                <img :src="screen.imageDataUrl" :alt="screen.screenName || `screen-${index + 1}`" />
+              </div>
+            </article>
+          </div>
           <textarea v-model="prompt" class="prompt-input" />
-          <button class="primary-button" :disabled="isGenerating" @click="() => generateArtifacts()">
-            {{ isGenerating ? "생성 중..." : "문서 생성" }}
+          <button
+            class="primary-button"
+            :disabled="primaryGenerateDisabled"
+            @click="() => generateArtifacts(activeTab === 'screenSpec' ? 'screenSpec' : undefined)"
+          >
+            {{ primaryGenerateButtonLabel }}
           </button>
+          <p v-if="activeTab === 'screenSpec' && !canGenerateScreenSpec" class="helper-text">
+            화면기획서는 먼저 `PRD`, `기능명세서`, `정책서`, `유저플로우`, `흐름도차트`가 생성된 뒤 활성화됩니다.
+          </p>
           <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
         </section>
 
@@ -1361,8 +1789,18 @@ onMounted(() => {
           <div class="board-meta">
             <span>{{ currentDocument.version }}</span>
             <span>{{ new Date(currentDocument.generatedAt).toLocaleString("ko-KR") }}</span>
-            <button class="secondary-button" :disabled="isGenerating" @click="() => generateArtifacts(activeTab)">
-              {{ isGenerating ? "재생성 중..." : "현재 문서부터 재생성" }}
+            <button
+              class="secondary-button"
+              :disabled="isGenerating || (activeTab === 'screenSpec' && !canGenerateScreenSpec)"
+              @click="() => generateArtifacts(activeTab)"
+            >
+              {{
+                isGenerating
+                  ? "재생성 중..."
+                  : activeTab === "screenSpec"
+                    ? "화면기획서 생성/재생성"
+                    : "현재 문서부터 재생성"
+              }}
             </button>
           </div>
         </div>
@@ -1457,6 +1895,18 @@ onMounted(() => {
             </div>
 
             <FlowChartBoard :visualization="flowChartVisualization" />
+          </section>
+
+          <section v-if="screenSpecVisualization" class="visual-section">
+            <div class="visual-section__header">
+              <div>
+                <span class="label">추가 시각화</span>
+                <h2>{{ screenSpecVisualization.title }}</h2>
+              </div>
+              <p>업로드한 화면 이미지와 기존 산출물을 연결한 화면정의서 형태의 보드입니다.</p>
+            </div>
+
+            <ScreenSpecBoard :visualization="screenSpecVisualization" />
           </section>
         </div>
       </section>
@@ -1570,7 +2020,7 @@ onMounted(() => {
 }
 
 .tab {
-  min-width: 120px;
+  min-width: 80px;
   height: 40px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -1694,6 +2144,98 @@ onMounted(() => {
   line-height: 1.5;
 }
 
+.screen-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.screen-inputs__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.screen-inputs__header > div {
+  width: 170px;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen-inputs__header > button {
+  height: 29px;
+  padding: 0 10px;
+  background: #f4f4f4;
+  font-size: 12px;
+}
+
+.screen-inputs__header p,
+.screen-inputs__empty {
+  color: #777777;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.screen-input-card {
+  padding: 14px;
+  border: 1px solid #e8ece8;
+  border-radius: 14px;
+  background: #fbfbfb;
+}
+
+.screen-input-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.screen-input-card__remove {
+  border: 0;
+  background: transparent;
+  color: #fb4f4f;
+  font-size: 12px;
+}
+
+.screen-input-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.screen-notes-input {
+  width: 100%;
+  min-height: 72px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #d9ded9;
+  border-radius: 6px;
+  background: #ffffff;
+  resize: vertical;
+  font-size: 13px;
+}
+
+.screen-notes-input:focus {
+  outline: none;
+  border-color: #00ad50;
+}
+
+.screen-preview {
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid #dfe6de;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.screen-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .label {
   display: inline-block;
   margin-bottom: 6px;
@@ -1803,6 +2345,13 @@ onMounted(() => {
 .error-text {
   margin-top: 10px;
   color: #fb4f4f;
+}
+
+.helper-text {
+  margin-top: 10px;
+  color: #5c665f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .board-panel {
